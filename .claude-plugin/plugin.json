@@ -1,7 +1,8 @@
 {
   "name": "cache-meter",
   "version": "0.1.0",
-  "description": "A quiet meter above the prompt: prompt cache warm or cold, time left, context size, what the next message costs warm and cold, cache hit rate, 5h and 7d usage. /cache opens the full breakdown.",
+  "description": "A quiet meter above the prompt: prompt cache warm or cold, time left, context size, what the next message costs warm and cold, cache hit rate and your usage limits. /cache opens the full breakdown, with an optional Keep Warm.",
+  "icon": "./.claude-plugin/icon.png",
   "author": {
     "name": "Eryk Sadowski",
     "url": "https://eryksadowski.com"
@@ -15,7 +16,8 @@
     "rate-limit",
     "cost",
     "status",
-    "mod"
+    "mod",
+    "keep-warm"
   ],
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -39,6 +41,28 @@
         "confirm",
         "warn",
         "off"
+      ]
+    },
+    "keepWarm": {
+      "type": "string",
+      "title": "Keep Warm at start",
+      "description": "on: every new session starts with Keep Warm on. off: switch it on per session from the pane or with /cache warm.",
+      "default": "off",
+      "options": [
+        "off",
+        "on"
+      ]
+    },
+    "keepWarmFor": {
+      "type": "string",
+      "title": "Keep Warm for",
+      "description": "How long after your last message Keep Warm goes on pinging. Each ping costs one cache read of the context.",
+      "default": "2h",
+      "options": [
+        "1h",
+        "2h",
+        "4h",
+        "8h"
       ]
     }
   }

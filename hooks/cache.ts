@@ -10,6 +10,11 @@ export const SOON_MS: Record<Ttl, number> = { '1h': 10 * 60 * 1000, '5m': 60 * 1
 /** A cold send under this many context tokens is cheap enough to let through without a word. */
 export const GUARD_MIN_TOKENS = 50_000
 
+/** Keep Warm pings this long before the cache would expire. */
+export const WARM_LEAD_MS: Record<Ttl, number> = { '1h': 5 * 60 * 1000, '5m': 45 * 1000 }
+/** How long after the last real message Keep Warm goes on pinging. */
+export const WARM_FOR_MS: Record<string, number> = { '1h': 1 * 3_600_000, '2h': 2 * 3_600_000, '4h': 4 * 3_600_000, '8h': 8 * 3_600_000 }
+
 /** A request that writes at least this share of the previous context re-cached it: a cold write. */
 export const COLD_WRITE_SHARE = 0.5
 /** Contexts smaller than this never count as a cold write (the first turns of a session). */
@@ -87,12 +92,6 @@ export const dur = (ms: number): string => {
 }
 
 export const pct = (part: number, whole: number): number => (whole > 0 ? Math.round((part / whole) * 100) : 0)
-
-/** A bar of `cells` cells, `share` of them filled (0 to 1). */
-export const bar = (share: number, cells: number): { on: string; off: string } => {
-  const n = Math.max(0, Math.min(cells, Math.round(share * cells)))
-  return { on: '━'.repeat(n), off: '─'.repeat(cells - n) }
-}
 
 export type CacheState = 'none' | 'warm' | 'soon' | 'cold'
 

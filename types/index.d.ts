@@ -26,6 +26,22 @@ export type Stats = {
   last: Request | null
 }
 
+/**
+ * Keep Warm for this session: whether it is on (null: as the setting says),
+ * when the last real main-thread request started, and the pings sent since
+ * then and over the session.
+ */
+export type KeepWarm = {
+  on: boolean | null
+  since: number
+  streak: number
+  pings: number
+  usd: number
+  lastPingAt: number
+  /** Pings that found the cache already gone and paid a full write. */
+  missed: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'cache-meter': {
@@ -33,6 +49,7 @@ declare module 'claude-code' {
       limits: Shaped<Limit[]>
       stats: Shaped<Stats>
       sessionUsd: Shaped<number | null>
+      warm: Shaped<KeepWarm>
     }
   }
 }

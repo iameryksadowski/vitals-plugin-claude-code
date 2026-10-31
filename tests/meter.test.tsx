@@ -20,7 +20,7 @@ const FIVE_HOUR = { kind: 'five_hour', percentUsed: 42, resetsAt: '2026-10-31T05
 const SEVEN_DAY = { kind: 'seven_day', percentUsed: 88, resetsAt: '2026-11-03T00:00:00Z' }
 
 /** The engine beneath the plugin: usage, model, commands, panes, and one 300k-token Opus 5.5 request. */
-const engine = (on: On, rateLimits: { kind: string; percentUsed: number; resetsAt?: string }[] = [FIVE_HOUR, SEVEN_DAY]) => {
+const engine = (on: On, rateLimits: { kind: string; percentUsed: number; resetsAt?: string }[] = [FIVE_HOUR, SEVEN_DAY], forks = { n: 0 }) => {
   on('session.usage', () => ({
     value: { startedAt: 0, context: { tokens: 300_000, window: 1_000_000, percent: 30 }, rateLimits, cost: { usd: 3.5 } },
   }))
@@ -32,6 +32,17 @@ const engine = (on: On, rateLimits: { kind: string; percentUsed: number; resetsA
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
     const { Box } = $.ui.resolve(e)
     return <Box />
+  })
+  // A Keep Warm fork the cache serves: the whole prefix read, a one-word reply.
+  on('model.fork', () => {
+    forks.n += 1
+    return {
+      value: {
+        isAnswered: true as const,
+        text: 'OK',
+        usage: { input_tokens: 30, output_tokens: 2, cache_read_input_tokens: 301_000, cache_creation_input_tokens: 0 },
+      },
+    }
   })
   on('turn.step', async function* (_, e) {
     return {
@@ -161,4 +172,49 @@ test('a value an earlier version stored is declined', async ($, on) => {
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
   expect(await ui.find({ type: 'Text', text: /Waiting for the first reply/ })).toBeDefined()
   await ui.unmount()
+})
+
+test('Keep Warm is off by default and switched on from the pane', async ($, on) => {
+  const forks = { n: 0 }
+  engine(on, [SEVEN_DAY], forks)
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await step($)
+  await clock.advance(HOUR + 60 * 1000)
+  expect(forks.n).toBe(0)
+
+  // A fresh reply, then the toggle in the pane.
+  await step($)
+  const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await pane.find({ type: 'Text', text: 'Off' })).toBeDefined()
+  await pane.press({ key: 'keep-warm-toggle' })
+  await pane.unmount()
+
+  const again = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await again.find({ type: 'Text', text: 'On' })).toBeDefined()
+  await again.unmount()
+})
+
+test('Keep Warm pings once before the TTL ends and stops after its window', { options: { keepWarm: 'on', keepWarmFor: '1h' } }, async ($, on) => {
+  const forks = { n: 0 }
+  engine(on, [SEVEN_DAY], forks)
+  const clock = mock.clock(on, { now: 1_000_000 })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await step($)
+
+  // Five minutes before the hour runs out, one fork reads the cache and starts the TTL over.
+  await clock.advance(HOUR - 4 * 60 * 1000)
+  expect(forks.n).toBe(1)
+  await clock.advance(10 * 60 * 1000)
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await band.find({ type: 'Text', text: 'Warm' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: '  Kept Warm' })).toBeDefined()
+  await band.unmount()
+
+  // Past the 1h window after the last message it lets the cache go.
+  await clock.advance(2 * HOUR)
+  expect(forks.n).toBe(1)
+  const cold = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await cold.find({ type: 'Text', text: 'Cold' })).toBeDefined()
+  await cold.unmount()
 })

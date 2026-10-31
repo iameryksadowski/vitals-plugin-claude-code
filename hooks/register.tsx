@@ -307,7 +307,7 @@ export const register: Register = (on, options) => {
       segs.push({
         key: 'cache',
         prio: 0,
-        pieces: [{ t: '○ ', dim: true }, { t: TITLE, bold: true }, { t: '  Waiting for the first reply', dim: true }],
+        pieces: [{ t: '○ ', dim: true }, { t: TITLE, bold: true }, { t: st.requests ? '  Waiting for the next reply' : '  Waiting for the first reply', dim: true }],
       })
     } else {
       const cold = view.state === 'cold'
@@ -348,7 +348,7 @@ export const register: Register = (on, options) => {
         pieces: [
           { t: `${LIMIT_NAME[w.kind] ?? w.kind} `, dim: true },
           { t: `${used}%`, color: limitTone(used), bold: true },
-          ...(reset ? [{ t: `  Resets in ${reset}`, dim: true }] : []),
+          ...(reset ? [{ t: `  ${reset}`, dim: true }] : []),
         ],
       })
     })
@@ -417,7 +417,7 @@ export const register: Register = (on, options) => {
     cards.push(
       <Card k="cache" title={TITLE} note={<Text dimColor>{`TTL ${ttl}`}</Text>} first>
         {view.state === 'none' ? (
-          <Row k="state" label="State"><Text dimColor>No request yet</Text></Row>
+          <Row k="state" label="State"><Text dimColor>{st.requests ? 'Known after the next reply' : 'No request yet'}</Text></Row>
         ) : (
           [
             <Row k="state" label="State">
@@ -575,7 +575,7 @@ export const register: Register = (on, options) => {
               <Row k={`l-${l.kind}`} label={LIMIT_NAME[l.kind] ?? l.kind}>
                 <Text>
                   <Text bold tabular color={limitTone(used)}>{`${used}%`}</Text>
-                  {reset ? <Text dimColor>{`${dot}Resets in ${reset}`}</Text> : null}
+                  {reset ? <Text dimColor>{`${dot}${reset}`}</Text> : null}
                 </Text>
                 <Meter share={used / 100} color={limitTone(used)} />
               </Row>

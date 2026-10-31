@@ -3,7 +3,7 @@
 A quiet meter above the Claude Code prompt for the prompt cache and your usage limits. One row in your theme's colors; the full breakdown one click away.
 
 ```
-● Cache Warm  42m left  │  Next $0.06  │  Context 301k  30%  │  Weekly 88%  Resets in 2d 4h  │  If Cold $2.41  │  Hit Rate 97%    Details
+● Cache Warm  42m left  │  Next $0.06  │  Context 301k  30%  │  Weekly 88%  2d 4h  │  If Cold $2.41  │  Hit Rate 97%    Details
 ```
 
 ## Install

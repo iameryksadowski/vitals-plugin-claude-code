@@ -105,7 +105,7 @@ test('a plan held to the 7d window alone shows the weekly limit and no 5-hour on
     // On a narrow band the weekly limit outlasts everything but the cache state.
     const narrow = await $.ui.mount({ ...BAND, surface, props: { ...BAND.props, bodyColumns: 80 } })
     expect(await narrow.find({ type: 'Text', text: 'Weekly ' })).toBeDefined()
-    expect(await narrow.find({ type: 'Text', text: /Resets in/ })).toBeDefined()
+    expect(await narrow.find({ type: 'Text', text: '  3d 0h' })).toBeDefined()
     expect(await narrow.find({ type: 'Text', text: '1h 00m left' })).toBeDefined()
     await narrow.unmount()
 
@@ -164,7 +164,7 @@ test('the pane breaks down the cache, the session and the windows on every surfa
     expect(await ui.find({ type: 'Text', text: 'Prompt Cache' })).toBeDefined()
     // 580k read of 600k input.
     expect(await ui.find({ type: 'Text', text: '97%' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /Resets in/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^  ·  \d+d \d+h$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'Opus 5.5' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'Extra High' })).toBeDefined()
     await ui.unmount()

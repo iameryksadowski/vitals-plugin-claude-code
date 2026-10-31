@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- ES Tools Cache Meter: the Eryk Sadowski ring, cut on the diagonal, read as a meter. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#171717"/>
+      <stop offset="1" stop-color="#0a0a0a"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="228" fill="url(#bg)"/>
+  <g transform="rotate(30.8 512 512)">
+    <clipPath id="filled" clipPathUnits="userSpaceOnUse"><rect x="-512" y="-512" width="2048" height="1007"/></clipPath>
+    <clipPath id="empty" clipPathUnits="userSpaceOnUse"><rect x="-512" y="529" width="2048" height="1007"/></clipPath>
+    <circle cx="512" cy="512" r="276" fill="none" stroke="#10b981" stroke-width="108" clip-path="url(#filled)"/>
+    <circle cx="512" cy="512" r="276" fill="none" stroke="#fafafa" stroke-width="108" clip-path="url(#empty)"/>
+  </g>
+</svg>

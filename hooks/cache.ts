@@ -10,6 +10,11 @@ export const SOON_MS: Record<Ttl, number> = { '1h': 10 * 60 * 1000, '5m': 60 * 1
 /** A cold send under this many context tokens is cheap enough to let through without a word. */
 export const GUARD_MIN_TOKENS = 50_000
 
+/** Keep Warm pings this long before the cache would expire. */
+export const WARM_LEAD_MS: Record<Ttl, number> = { '1h': 5 * 60 * 1000, '5m': 45 * 1000 }
+/** How long after the last real message Keep Warm goes on pinging. */
+export const WARM_FOR_MS: Record<string, number> = { '1h': 1 * 3_600_000, '2h': 2 * 3_600_000, '4h': 4 * 3_600_000, '8h': 8 * 3_600_000 }
+
 /** A request that writes at least this share of the previous context re-cached it: a cold write. */
 export const COLD_WRITE_SHARE = 0.5
 /** Contexts smaller than this never count as a cold write (the first turns of a session). */
@@ -75,24 +80,18 @@ export const usd = (n: number | null): string => {
 export const tok = (n: number): string =>
   n >= 1e6 ? `${Number((n / 1e6).toFixed(n >= 1e7 ? 0 : 1))}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(Math.round(n))
 
-/** A duration as 45s, 18m, 2h05m, 3d4h. */
+/** A duration as 45s, 18m, 2h 05m, 3d 4h. */
 export const dur = (ms: number): string => {
   const s = Math.max(0, Math.floor(ms / 1000))
   if (s < 60) return `${s}s`
   const mins = Math.floor(s / 60)
   if (mins < 60) return `${mins}m`
   const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h${String(mins % 60).padStart(2, '0')}m`
-  return `${Math.floor(hours / 24)}d${hours % 24}h`
+  if (hours < 24) return `${hours}h ${String(mins % 60).padStart(2, '0')}m`
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`
 }
 
 export const pct = (part: number, whole: number): number => (whole > 0 ? Math.round((part / whole) * 100) : 0)
-
-/** A bar of `cells` cells, `share` of them filled (0 to 1). */
-export const bar = (share: number, cells: number): { on: string; off: string } => {
-  const n = Math.max(0, Math.min(cells, Math.round(share * cells)))
-  return { on: '━'.repeat(n), off: '─'.repeat(cells - n) }
-}
 
 export type CacheState = 'none' | 'warm' | 'soon' | 'cold'
 
@@ -132,7 +131,7 @@ export const TONE: Record<CacheState, string | undefined> = { none: undefined, w
 /** A usage window's tone: calm under 80% used, a warning to 95%, then an error. */
 export const limitTone = (used: number): string | undefined => (used >= 95 ? 'error' : used >= 80 ? 'warning' : undefined)
 
-export const LIMIT_NAME: Record<string, string> = { five_hour: '5h', seven_day: '7d', spend_limit: 'spend' }
+export const LIMIT_NAME: Record<string, string> = { five_hour: '5-Hour', seven_day: 'Weekly', spend_limit: 'Spend' }
 const LIMIT_ORDER: Record<string, number> = { five_hour: 0, seven_day: 1 }
 
 export const sortLimits = <T extends { kind: string }>(list: readonly T[]): T[] =>

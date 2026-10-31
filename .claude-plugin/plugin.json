@@ -1,0 +1,45 @@
+{
+  "name": "cache-meter",
+  "version": "0.1.0",
+  "description": "A quiet meter above the prompt: prompt cache warm or cold, time left, context size, what the next message costs warm and cold, cache hit rate, 5h and 7d usage. /cache opens the full breakdown.",
+  "author": {
+    "name": "Eryk Sadowski",
+    "url": "https://eryksadowski.com"
+  },
+  "homepage": "https://github.com/iameryksadowski/estools-plugin-claude-code-cache-meter",
+  "repository": "https://github.com/iameryksadowski/estools-plugin-claude-code-cache-meter",
+  "license": "MIT",
+  "keywords": [
+    "prompt-cache",
+    "usage",
+    "rate-limit",
+    "cost",
+    "status",
+    "mod"
+  ],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "ttl": {
+      "type": "string",
+      "title": "Prompt cache lifetime",
+      "description": "auto: 1h on a Claude subscription, 5m on an API key. Set it by hand if you changed promptCacheTtl.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "1h",
+        "5m"
+      ]
+    },
+    "guard": {
+      "type": "string",
+      "title": "Cold send guard",
+      "description": "confirm: hold a message sent into a cold cache once and show the price, the resend goes through. warn: only show the price. off: nothing.",
+      "default": "confirm",
+      "options": [
+        "confirm",
+        "warn",
+        "off"
+      ]
+    }
+  }
+}

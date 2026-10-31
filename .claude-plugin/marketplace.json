@@ -1,0 +1,14 @@
+{
+  "name": "estools",
+  "owner": {
+    "name": "Eryk Sadowski",
+    "url": "https://eryksadowski.com"
+  },
+  "plugins": [
+    {
+      "name": "cache-meter",
+      "source": "./",
+      "description": "ES Tools Cache Meter: prompt cache and usage windows above the Claude Code prompt."
+    }
+  ]
+}

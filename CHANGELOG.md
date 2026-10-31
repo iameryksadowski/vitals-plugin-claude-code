@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.1.2] - 2026-10-31
+
+### Added
+
+- The pane shows the effort next to the model (Low, Medium, High, Extra High, Max, or a token budget), as the last main-thread request asked for it.
+
 ## [0.1.1] - 2026-10-31
 
 ### Changed

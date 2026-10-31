@@ -4,9 +4,11 @@ export type Limit = { kind: string; percentUsed: number; resetsAt?: string }
 /**
  * The prompt cache as last seen on the main thread: when the last request
  * started (clock ms, 0 before the first), the context the next request
- * re-sends, the model's context window and the model id.
+ * re-sends, the model's context window, the model id and the effort the
+ * request asked for (a level or a token budget; null when unknown or the
+ * model takes none).
  */
-export type CacheFacts = { lastAt: number; ctx: number; window: number; model: string | null }
+export type CacheFacts = { lastAt: number; ctx: number; window: number; model: string | null; effort: string | number | null }
 
 /** Token counts of one main-thread request, as the API reported them. */
 export type Request = { at: number; read: number; write: number; uncached: number; output: number; model: string; usd: number | null }

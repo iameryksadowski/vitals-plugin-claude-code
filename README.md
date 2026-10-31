@@ -8,19 +8,14 @@ A quiet meter above the Claude Code prompt for the prompt cache and your usage l
 
 ## Install
 
-At the prompt of a Claude Code terminal session:
+Private repo: your GitHub account needs access to it. From a shell:
 
 ```
-/plugin install cache-meter --marketplace iameryksadowski/estools-plugin-claude-code-cache-meter
+claude plugin marketplace add iameryksadowski/estools-plugin-claude-code-cache-meter
+claude plugin install cache-meter@estools --scope user
 ```
 
-Answer `y` to add the marketplace and pick the user scope. From a shell:
-
-```
-claude plugin install cache-meter --marketplace iameryksadowski/estools-plugin-claude-code-cache-meter
-```
-
-In the desktop app: click + next to the prompt box, then Plugins, Add marketplace with `iameryksadowski/estools-plugin-claude-code-cache-meter`, then Add plugin.
+Or at the prompt of a Claude Code session: `/plugin marketplace add iameryksadowski/estools-plugin-claude-code-cache-meter`, then `/plugin install cache-meter@estools`. Update later with `claude plugin marketplace update estools`.
 
 ## What it shows
 

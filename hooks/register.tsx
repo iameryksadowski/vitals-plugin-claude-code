@@ -1,10 +1,12 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { CacheFacts, KeepWarm, Limit, Stats } from '../types'
+import type { CacheFacts, EngineCache, KeepWarm, Limit, Stats } from '../types'
+import { SEP, fit, spaced } from './band'
+import type { Segment } from './band'
 import {
   COLD_WRITE_MIN, COLD_WRITE_SHARE, GUARD_MIN_TOKENS, LIMIT_NAME, TONE, TTL_MS, WARM_FOR_MS, WARM_LEAD_MS,
-  dur, effortLabel, limitTone, pct, priceOf, requestUsd, resetIn, sortLimits, tok, usd, viewOf, warmUsd, writeRate,
+  dur, effortLabel, limitTone, modelName, pct, pctDown, priceOf, requestUsd, resetIn, sortLimits, tok, usd, viewOf, warmUsd, writeRate,
 } from './cache'
 import type { CacheView, Ttl } from './cache'
 
@@ -23,12 +25,14 @@ const PING = 'Cache keep-alive ping from the Cache Meter plugin. Reply with the 
 
 const EMPTY_STATS: Stats = { requests: 0, read: 0, write: 0, uncached: 0, output: 0, savedUsd: 0, coldWrites: 0, coldUsd: 0, last: null }
 const EMPTY_WARM: KeepWarm = { on: null, since: 0, streak: 0, pings: 0, usd: 0, lastPingAt: 0, missed: 0 }
+const EMPTY_ENGINE: EngineCache = { ttl: null, switchedTo: null }
 
 const facts = atom({ plugin: 'cache-meter', key: 'facts' } as const, null as CacheFacts | null, { shape: 'facts-2' })
 const limits = atom({ plugin: 'cache-meter', key: 'limits' } as const, [] as Limit[], { shape: 'limits-1' })
 const stats = atom({ plugin: 'cache-meter', key: 'stats' } as const, EMPTY_STATS, { shape: 'stats-1' })
 const sessionUsd = atom({ plugin: 'cache-meter', key: 'sessionUsd' } as const, null as number | null, { shape: 'usd-1' })
 const warm = atom({ plugin: 'cache-meter', key: 'warm' } as const, EMPTY_WARM, { shape: 'warm-1' })
+const engine = atom({ plugin: 'cache-meter', key: 'engine' } as const, EMPTY_ENGINE, { shape: 'engine-1' })
 
 /**
  * The limits the account is actually held to. Plans differ (Ultra has the
@@ -38,30 +42,9 @@ const warm = atom({ plugin: 'cache-meter', key: 'warm' } as const, EMPTY_WARM, {
 const cleanLimits = (list: readonly Limit[]): Limit[] =>
   sortLimits(
     list
-      .filter(w => w.resetsAt !== undefined || w.percentUsed > 0)
-      .map(w => ({ kind: w.kind, percentUsed: w.percentUsed, resetsAt: w.resetsAt })),
+      .filter(w => Number.isFinite(w.percentUsed) && (w.resetsAt !== undefined || w.percentUsed > 0))
+      .map(w => ({ kind: w.kind, percentUsed: Math.min(100, Math.max(0, w.percentUsed)), resetsAt: w.resetsAt })),
   )
-
-/** One run of text in the band. */
-type Piece = { t: string; color?: string; dim?: boolean; bold?: boolean }
-/** One part of the band; the lower `prio`, the longer it stays as the band narrows. */
-type Segment = { key: string; prio: number; pieces: Piece[] }
-
-const SEP = '  │  '
-const widthOf = (s: Segment): number => s.pieces.reduce((n, p) => n + p.t.length, 0)
-
-/** The parts that fit in `columns`, kept in their reading order. */
-const fit = (segs: Segment[], columns: number, reserve: number): Segment[] => {
-  const keep = new Set<string>()
-  let used = reserve
-  for (const s of [...segs].sort((a, b) => a.prio - b.prio)) {
-    const w = widthOf(s) + (keep.size ? SEP.length : 0)
-    if (used + w > columns) continue
-    keep.add(s.key)
-    used += w
-  }
-  return segs.filter(s => keep.has(s.key))
-}
 
 type TtlOption = Ttl | 'auto'
 /** What register reads from the settings, handed to the top-level helpers. */
@@ -69,20 +52,34 @@ type Settings = { ttl: TtlOption; warmDefault: boolean; warmForMs: number }
 /** Keep Warm's one ping in flight, so ticks never overlap one. */
 type PingRun = { busy: boolean }
 
-/** auto: a subscription reports usage limits and caches for an hour; an API key caches for 5 minutes. */
-const resolveTtl = (option: TtlOption, ls: readonly Limit[]): Ttl => (option === 'auto' ? (ls.length > 0 ? '1h' : '5m') : option)
+/**
+ * The TTL: the setting when set by hand, else what the engine said it caches
+ * with, else a guess: a subscription reports usage limits and caches for an
+ * hour, an API key for 5 minutes.
+ */
+const resolveTtl = (option: TtlOption, ls: readonly Limit[], said: Ttl | null): Ttl =>
+  option !== 'auto' ? option : (said ?? (ls.length > 0 ? '1h' : '5m'))
 
 const isWarmOn = (w: KeepWarm, cfg: Settings): boolean => w.on ?? cfg.warmDefault
+
+/** The model as people name it, never a raw id where a name can be read. */
+const nameOf = (v: CacheView): string => v.price?.name ?? modelName(v.model) ?? v.model ?? 'Unknown model'
 
 /** Everything the band, the pane and the guard read, at one moment. */
 async function snapshot($: EngineInterface, cfg: Settings) {
   const ls = await read($, limits)
-  const ttl = resolveTtl(cfg.ttl, ls)
+  const eng = await read($, engine)
+  const ttl = resolveTtl(cfg.ttl, ls, eng.ttl)
   const now = await $.clock.now()
   const w = await read($, warm)
+  const f = await read($, facts)
+  // A model switched to since the last request has no cache of this context:
+  // the next message writes all of it, on the new model's price.
+  const switched = f && eng.switchedTo && eng.switchedTo !== f.model ? eng.switchedTo : null
+  const base = viewOf(switched && f ? { ...f, model: switched } : f, now, ttl)
+  const view: CacheView = switched && base.state !== 'none' ? { ...base, state: 'cold', leftMs: 0 } : base
   return {
-    ls, ttl, now, w,
-    view: viewOf(await read($, facts), now, ttl),
+    ls, ttl, now, w, view, switched,
     st: await read($, stats),
     total: await read($, sessionUsd),
     warmOn: isWarmOn(w, cfg),
@@ -115,8 +112,8 @@ async function setKeepWarm($: EngineInterface, cfg: Settings, to?: boolean): Pro
  */
 async function keepWarmTick($: EngineInterface, cfg: Settings, run: PingRun): Promise<void> {
   if (run.busy) return
-  const { view, ttl, now, w, warmOn } = await snapshot($, cfg)
-  if (!warmOn || (view.state !== 'warm' && view.state !== 'soon')) return
+  const { view, ttl, now, w, warmOn, switched } = await snapshot($, cfg)
+  if (!warmOn || switched || (view.state !== 'warm' && view.state !== 'soon')) return
   if (view.leftMs > WARM_LEAD_MS[ttl] || now - w.since > cfg.warmForMs) return
   run.busy = true
   try {
@@ -196,8 +193,10 @@ export const register: Register = (on, options) => {
     if (e.source === 'clear') {
       await update($, facts, () => null)
       await update($, stats, () => EMPTY_STATS)
+      await update($, engine, g => ({ ...g, switchedTo: null }))
     } else if (e.source === 'compact') {
       await update($, facts, () => null)
+      await update($, engine, g => ({ ...g, switchedTo: null }))
     } else if ((e.source === 'resume' || e.source === 'fork') && typeof e.seconds_since_last_response === 'number') {
       const now = await $.clock.now()
       const u = await $.session.usage()
@@ -205,10 +204,21 @@ export const register: Register = (on, options) => {
       const ctx = typeof e.context_tokens === 'number' ? e.context_tokens : (u.context.tokens ?? 0)
       const model = typeof e.model === 'string' ? e.model : await $.session.model()
       await update($, facts, f => ({ lastAt, ctx, window: u.context.window, model, effort: f?.effort ?? null }))
+      await update($, engine, g => ({ ...g, switchedTo: null }))
       await update($, warm, w => ({ ...w, since: lastAt, streak: 0 }))
     }
     return r
   }).catch(($, e, next) => next(e)) // a meter that fails to seed never holds up the session
+
+  // The engine says which TTL it caches with, and that a new model starts with no cache.
+  on('classic.PostModelSwitch', async ($, e, next) => {
+    const r = await next(e)
+    const ttl = e.cache_ttl === '5m' || e.cache_ttl === '1h' ? e.cache_ttl : null
+    const to = e.to_model !== e.from_model ? e.to_model : null
+    await update($, engine, g => ({ ttl: ttl ?? g.ttl, switchedTo: to ?? g.switchedTo }))
+    $.ui.invalidate('ui.render')
+    return r
+  }).catch(($, e, next) => next(e)) // a meter that fails never holds up a model switch
 
   on('session.compact', async ($, e, next) => {
     const r = await next(e)
@@ -227,7 +237,7 @@ export const register: Register = (on, options) => {
     const model = u.model || e.model
     const prompt = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
     const price = priceOf(model, prompt)
-    const ttl = resolveTtl(cfg.ttl, await read($, limits))
+    const ttl = resolveTtl(cfg.ttl, await read($, limits), (await read($, engine)).ttl)
     const prev = (await read($, facts))?.ctx ?? 0
     const write = u.cache_creation_input_tokens
     const isColdWrite = prev >= COLD_WRITE_MIN && write >= COLD_WRITE_SHARE * prev
@@ -244,8 +254,11 @@ export const register: Register = (on, options) => {
       coldUsd: s.coldUsd + (isColdWrite && price ? (write * writeRate(price, ttl)) / 1e6 : 0),
       last: { at: startedAt, ...req, model, usd: cost },
     }))
-    // The next request re-sends this prompt and this answer.
-    await update($, facts, f => ({ lastAt: startedAt, ctx: prompt + u.output_tokens, window: f?.window ?? 0, model, effort: e.effort ?? null }))
+    // The next request re-sends this prompt and this answer, on this model.
+    const known = (await read($, facts))?.window
+    const window = known || (await $.session.usage()).context.window || 0
+    await update($, facts, () => ({ lastAt: startedAt, ctx: prompt + u.output_tokens, window, model, effort: e.effort ?? null }))
+    await update($, engine, g => (g.switchedTo ? { ...g, switchedTo: null } : g))
     await update($, warm, w => ({ ...w, since: startedAt, streak: 0 }))
     return r
   })
@@ -268,12 +281,13 @@ export const register: Register = (on, options) => {
     if (kind && kind !== 'composer' && kind !== 'bridge') return next(e)
     if (e.command || e.text.trimStart().startsWith('/')) return next(e)
     const f = await read($, facts)
-    const { view, ttl } = await snapshot($, cfg)
+    const { view, ttl, switched } = await snapshot($, cfg)
     if (!f || view.state !== 'cold' || view.ctx < GUARD_MIN_TOKENS) return next(e)
-    const name = view.price?.name ?? view.model ?? 'this model'
-    const text =
-      `Cache Meter: The prompt cache went cold ${dur(view.idleMs - TTL_MS[ttl])} ago. ` +
-      `This message re-writes ~${tok(view.ctx)} tokens on ${name} for ${usd(view.cold)} (a warm read would be ${usd(view.warm)}).`
+    const why = switched
+      ? `The model changed to ${nameOf(view)}, so the prompt cache starts empty.`
+      : `The prompt cache went cold ${dur(view.idleMs - TTL_MS[ttl])} ago.`
+    const price = view.cold != null ? ` for ${usd(view.cold)}${view.warm != null && !switched ? ` (a warm read would be ${usd(view.warm)})` : ''}` : ''
+    const text = `Cache Meter: ${why} This message re-writes ~${tok(view.ctx)} tokens on ${nameOf(view)}${price}.`
     if (guard === 'warn' || ackedAt === f.lastAt) {
       if (guard === 'warn') $.ui.log(text)
       ackedAt = 0
@@ -284,7 +298,7 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e)) // a meter that fails never blocks a message
 
   on('command.run', { command: 'cache' }, async ($, e) => {
-    const [sub, arg] = e.args.trim().toLowerCase().split(/\s+/)
+    const [sub, arg] = (e.args ?? '').trim().toLowerCase().split(/\s+/)
     if (sub === 'warm') {
       const isOn = await setKeepWarm($, cfg, arg === 'on' ? true : arg === 'off' ? false : undefined)
       return { text: `Keep Warm is ${isOn ? 'on' : 'off'} for this session.` }
@@ -292,84 +306,95 @@ export const register: Register = (on, options) => {
     const opened = await openPane($)
     if (opened.isPlaced) return { text: 'Prompt Cache details are open in the side pane.' }
     const s = await snapshot($, cfg)
-    return { text: summary(s.view, s.st, s.ls, s.ttl, s.now, s.total, s.warmOn, s.w).join('\n') }
+    return { text: summary(s.view, s.st, s.ls, s.ttl, s.now, s.total, s.warmOn, s.w, s.switched).join('\n') }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const rest = await next(e)
     if (e.props.hasSurvey) return rest
     const { Box, Button, Text } = $.ui.resolve(e)
-    const { view, st, ls, total, now, warmOn } = await snapshot($, cfg)
+    const { view, st, ls, total, now, warmOn, switched } = await snapshot($, cfg)
     const tone = TONE[view.state]
+    const cold = view.state === 'cold'
 
     const segs: Segment[] = []
     if (view.state === 'none') {
       segs.push({
         key: 'cache',
         prio: 0,
-        pieces: [{ t: '○ ', dim: true }, { t: TITLE, bold: true }, { t: st.requests ? '  Waiting for the next reply' : '  Waiting for the first reply', dim: true }],
+        pieces: [
+          { t: '○', dim: true },
+          { t: TITLE, bold: true },
+          { t: st.requests ? 'Waiting for the next reply' : 'Waiting for the first reply', dim: true },
+        ],
       })
     } else {
-      const cold = view.state === 'cold'
       segs.push({
         key: 'cache',
         prio: 0,
         pieces: [
-          { t: '● ', color: tone },
-          { t: 'Cache ', dim: true },
+          { t: '●', color: tone },
+          { t: 'Cache', dim: true },
           { t: cold ? 'Cold' : 'Warm', color: tone, bold: true },
-          cold
-            ? { t: `  Idle ${dur(view.idleMs)}`, dim: true }
-            : { t: `  ${dur(view.leftMs)} left`, color: view.state === 'soon' ? tone : undefined },
-          ...(warmOn && !cold ? [{ t: '  Kept Warm', dim: true }] : []),
+          switched
+            ? { t: 'Model changed', dim: true }
+            : cold
+              ? { t: `Idle ${dur(view.idleMs)}`, dim: true }
+              : { t: `${dur(view.leftMs)} left`, color: view.state === 'soon' ? tone : undefined },
+          ...(warmOn && !cold ? [{ t: 'Kept Warm', dim: true }] : []),
         ],
       })
-      segs.push(
-        cold
-          ? { key: 'next', prio: 2, pieces: [{ t: 'Next ', dim: true }, { t: usd(view.cold), color: 'error', bold: true }, { t: '  Re-cache', dim: true }] }
-          : { key: 'next', prio: 2, pieces: [{ t: 'Next ', dim: true }, { t: usd(view.warm), bold: true }] },
-      )
-      if (!cold) segs.push({ key: 'cold', prio: 4, pieces: [{ t: 'If Cold ', dim: true }, { t: usd(view.cold) }] })
+      // An unknown price is left out, never shown as a figure.
+      if (cold && view.cold != null) {
+        segs.push({ key: 'next', prio: 2, pieces: [{ t: 'Next', dim: true }, { t: usd(view.cold), color: 'error', bold: true }, { t: 'Re-cache', dim: true }] })
+      } else if (!cold && view.warm != null) {
+        segs.push({ key: 'next', prio: 2, pieces: [{ t: 'Next', dim: true }, { t: usd(view.warm), bold: true }] })
+      }
+      if (!cold && view.cold != null) segs.push({ key: 'cold', prio: 4, pieces: [{ t: 'If Cold', dim: true }, { t: usd(view.cold) }] })
       segs.push({
         key: 'ctx',
         prio: 3,
-        pieces: [{ t: 'Context ', dim: true }, { t: tok(view.ctx) }, ...(view.window ? [{ t: `  ${pct(view.ctx, view.window)}%`, dim: true }] : [])],
+        pieces: [{ t: 'Context', dim: true }, { t: tok(view.ctx) }, ...(view.window ? [{ t: `${pct(view.ctx, view.window)}%`, dim: true }] : [])],
       })
     }
     const inputs = st.read + st.write + st.uncached
-    if (st.requests > 0) segs.push({ key: 'hit', prio: 5, pieces: [{ t: 'Hit Rate ', dim: true }, { t: `${pct(st.read, inputs)}%` }] })
-    ls.forEach((w, i) => {
-      const used = Math.round(w.percentUsed)
-      const reset = resetIn(w.resetsAt, now)
+    if (st.requests > 0 && inputs > 0) segs.push({ key: 'hit', prio: 5, pieces: [{ t: 'Hit Rate', dim: true }, { t: `${pctDown(st.read, inputs)}%` }] })
+    ls.forEach((l, i) => {
+      const used = Math.round(l.percentUsed)
+      const reset = resetIn(l.resetsAt, now)
       segs.push({
-        key: `limit-${w.kind}`,
+        key: `limit-${l.kind}`,
         // The plan's main limit stays in the band as long as the cache state does.
         prio: i === 0 ? 1 : 3,
-        pieces: [
-          { t: `${LIMIT_NAME[w.kind] ?? w.kind} `, dim: true },
-          { t: `${used}%`, color: limitTone(used), bold: true },
-          ...(reset ? [{ t: `  ${reset}`, dim: true }] : []),
-        ],
+        pieces:
+          reset === 'now'
+            ? [{ t: LIMIT_NAME[l.kind] ?? l.kind, dim: true }, { t: 'Just reset', dim: true }]
+            : [
+                { t: LIMIT_NAME[l.kind] ?? l.kind, dim: true },
+                { t: `${used}%`, color: limitTone(used), bold: true },
+                ...(reset ? [{ t: reset, dim: true }] : []),
+              ],
       })
     })
-    if (total != null && total > 0) segs.push({ key: 'usd', prio: 6, pieces: [{ t: 'Session ', dim: true }, { t: usd(total) }] })
+    if (total != null && total > 0) segs.push({ key: 'usd', prio: 6, pieces: [{ t: 'Session', dim: true }, { t: usd(total) }] })
 
     const columns = e.props.bodyColumns ?? e.viewport?.columns ?? 100
     const DETAILS = 'Details'
-    const shown = fit(segs, columns - 2, DETAILS.length + 2)
+    // The row's own padding takes a column each side.
+    const { shown, withReserve } = fit(segs, columns - 2, DETAILS.length + 2)
 
     const row = (
       <Box key="cache-meter" flexDirection="row" paddingX={1}>
         {shown.map((s, i) => (
           <Box key={s.key} flexDirection="row" flexShrink={0}>
             {i > 0 ? <Text dimColor>{SEP}</Text> : null}
-            {s.pieces.map(p => (
+            {spaced(s.pieces).map(p => (
               <Text color={p.color} dimColor={p.dim} bold={p.bold}>{p.t}</Text>
             ))}
           </Box>
         ))}
         <Box key="grow" flexGrow={1} />
-        <Button key="details" label={DETAILS} plain dimColor onPress={() => void openPane($)} />
+        {withReserve ? <Button key="details" label={DETAILS} plain dimColor onPress={() => void openPane($)} /> : null}
       </Box>
     )
     return rest ? <Box flexDirection="column">{rest}{row}</Box> : row
@@ -377,7 +402,7 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
-    const { view, st, ls, ttl, now, total, w, warmOn } = await snapshot($, cfg)
+    const { view, st, ls, ttl, now, total, w, warmOn, switched } = await snapshot($, cfg)
     const LABEL = 14
     const tone = TONE[view.state]
     const inputs = st.read + st.write + st.uncached
@@ -403,7 +428,7 @@ export const register: Register = (on, options) => {
     )
     /** A meter that fills its row: two boxes sized in percent, each clipping a long rule. */
     const Meter = (p: { share: number; color?: string }) => {
-      const filled = Math.max(0, Math.min(100, Math.round(p.share * 100)))
+      const filled = Number.isFinite(p.share) ? Math.max(0, Math.min(100, Math.round(p.share * 100))) : 0
       return (
         <Box flexDirection="row" flexGrow={1} height={1} overflow="hidden">
           <Box width={`${filled}%`} flexShrink={0} overflow="hidden"><Text color={p.color} wrap="truncate">{'━'.repeat(300)}</Text></Box>
@@ -413,6 +438,7 @@ export const register: Register = (on, options) => {
     }
 
     const cards: RenderChildren[] = []
+    const effort = effortLabel(view.effort)
 
     cards.push(
       <Card k="cache" title={TITLE} note={<Text dimColor>{`TTL ${ttl}`}</Text>} first>
@@ -423,15 +449,21 @@ export const register: Register = (on, options) => {
             <Row k="state" label="State">
               <Text>
                 <Text color={tone} bold>{cold ? 'Cold' : 'Warm'}</Text>
-                <Text dimColor>{cold ? `${dot}Idle ${dur(view.idleMs)}` : `${dot}${dur(view.leftMs)} left${dot}Idle ${dur(view.idleMs)}`}</Text>
+                <Text dimColor>
+                  {switched
+                    ? `${dot}Model changed, the next message writes the cache anew`
+                    : cold
+                      ? `${dot}Idle ${dur(view.idleMs)}`
+                      : `${dot}${dur(view.leftMs)} left${dot}Idle ${dur(view.idleMs)}`}
+                </Text>
               </Text>
             </Row>,
             <Row k="ttl" label="Time Left"><Meter share={cold ? 0 : view.leftMs / TTL_MS[ttl]} color={tone} /></Row>,
             <Row k="model" label="Model">
               <Text>
-                <Text>{view.price?.name ?? view.model ?? 'Unknown'}</Text>
-                {effortLabel(view.effort) ? <Text dimColor>{`${dot}Effort `}</Text> : null}
-                {effortLabel(view.effort) ? <Text bold>{effortLabel(view.effort)}</Text> : null}
+                <Text>{nameOf(view)}</Text>
+                {effort ? <Text dimColor>{`${dot}Effort `}</Text> : null}
+                {effort ? <Text bold>{effort}</Text> : null}
                 {view.price ? null : <Text dimColor>{`${dot}Not in the price table`}</Text>}
               </Text>
             </Row>,
@@ -447,19 +479,20 @@ export const register: Register = (on, options) => {
       </Card>,
     )
 
-    if (view.state !== 'none') {
+    if (view.state !== 'none' && view.price) {
+      const price = view.price
       cards.push(
         <Card k="next" title="Next Message" note={<Text dimColor>Re-sends the whole context</Text>}>
           <Row k="warm" label="While Warm">
             <Text>
               <Text tabular bold={!cold} color={cold ? undefined : 'success'}>{usd(view.warm)}</Text>
-              {view.price ? <Text dimColor>{`${dot}Read at $${view.price.read}/MTok`}</Text> : null}
+              <Text dimColor>{`${dot}Read at $${price.read}/MTok`}</Text>
             </Text>
           </Row>
           <Row k="cold" label="Once Cold">
             <Text>
               <Text tabular bold={cold} color={cold ? 'error' : undefined}>{usd(view.cold)}</Text>
-              {view.price ? <Text dimColor>{`${dot}Write at $${writeRate(view.price, ttl)}/MTok`}</Text> : null}
+              <Text dimColor>{`${dot}Write at $${writeRate(price, ttl)}/MTok`}</Text>
             </Text>
           </Row>
           {view.warm && view.cold ? (
@@ -472,8 +505,9 @@ export const register: Register = (on, options) => {
     }
 
     const forHours = Math.round(cfg.warmForMs / 3_600_000)
-    const pingIn = view.state === 'warm' || view.state === 'soon' ? Math.max(0, view.leftMs - WARM_LEAD_MS[ttl]) : null
+    const pingIn = !switched && (view.state === 'warm' || view.state === 'soon') ? Math.max(0, view.leftMs - WARM_LEAD_MS[ttl]) : null
     const windowLeft = w.since ? cfg.warmForMs - (now - w.since) : cfg.warmForMs
+    const pingUsd = warmUsd(view.price, view.ctx)
     cards.push(
       <Card
         k="keep-warm"
@@ -500,7 +534,7 @@ export const register: Register = (on, options) => {
                 ? 'After your next message'
                 : windowLeft <= pingIn
                   ? 'None, the cache is let go after this window'
-                  : `In ${dur(pingIn)}, about ${usd(warmUsd(view.price, view.ctx))}`}
+                  : `In ${dur(pingIn)}${pingUsd != null ? `, about ${usd(pingUsd)}` : ''}`}
             </Text>
           </Row>
         ) : null}
@@ -528,7 +562,7 @@ export const register: Register = (on, options) => {
             <Row k="req" label="Requests"><Text tabular>{String(st.requests)}</Text></Row>,
             <Row k="hit" label="Cache Hit">
               <Text>
-                <Text bold tabular>{`${pct(st.read, inputs)}%`}</Text>
+                <Text bold tabular>{`${pctDown(st.read, inputs)}%`}</Text>
                 <Text dimColor>{`${dot}${tok(st.read)} read${dot}${tok(st.write)} written${dot}${tok(st.uncached)} uncached`}</Text>
               </Text>
             </Row>,
@@ -573,11 +607,15 @@ export const register: Register = (on, options) => {
             const reset = resetIn(l.resetsAt, now)
             return (
               <Row k={`l-${l.kind}`} label={LIMIT_NAME[l.kind] ?? l.kind}>
-                <Text>
-                  <Text bold tabular color={limitTone(used)}>{`${used}%`}</Text>
-                  {reset ? <Text dimColor>{`${dot}${reset}`}</Text> : null}
-                </Text>
-                <Meter share={used / 100} color={limitTone(used)} />
+                {reset === 'now' ? (
+                  <Text dimColor>Just reset, updated with the next reply</Text>
+                ) : (
+                  <Text>
+                    <Text bold tabular color={limitTone(used)}>{`${used}%`}</Text>
+                    {reset ? <Text dimColor>{`${dot}${reset}`}</Text> : null}
+                  </Text>
+                )}
+                {reset === 'now' ? null : <Meter share={used / 100} color={limitTone(used)} />}
               </Row>
             )
           })}
@@ -601,20 +639,28 @@ export const register: Register = (on, options) => {
 
 /** The pane's figures as plain lines, for a surface that cannot seat the pane. */
 const summary = (
-  v: CacheView, st: Stats, ls: readonly Limit[], ttl: Ttl, now: number, total: number | null, warmOn: boolean, w: KeepWarm,
+  v: CacheView, st: Stats, ls: readonly Limit[], ttl: Ttl, now: number, total: number | null, warmOn: boolean, w: KeepWarm, switched: string | null,
 ): string[] => {
   const out: string[] = []
   const line = (label: string, value: string) => out.push(`${label.padEnd(14)}${value}`)
-  if (v.state === 'none') line('Prompt Cache', 'No request yet')
+  const effort = effortLabel(v.effort)
+  if (v.state === 'none') line('Prompt Cache', st.requests ? 'Known after the next reply' : 'No request yet')
   else {
-    line('Prompt Cache', `${v.state === 'cold' ? `Cold, idle ${dur(v.idleMs)}` : `Warm, ${dur(v.leftMs)} left`} (TTL ${ttl})`)
-    line('Context', `${tok(v.ctx)} tokens${v.window ? `, ${pct(v.ctx, v.window)}% of ${tok(v.window)}` : ''} on ${v.price?.name ?? v.model ?? 'an unknown model'}${effortLabel(v.effort) ? `, effort ${effortLabel(v.effort)}` : ''}`)
-    line('Next Message', `${usd(v.warm)} warm, ${usd(v.cold)} cold`)
+    const state = switched ? 'Cold, the model changed' : v.state === 'cold' ? `Cold, idle ${dur(v.idleMs)}` : `Warm, ${dur(v.leftMs)} left`
+    line('Prompt Cache', `${state} (TTL ${ttl})`)
+    line('Context', `${tok(v.ctx)} tokens${v.window ? `, ${pct(v.ctx, v.window)}% of ${tok(v.window)}` : ''}`)
+    line('Model', `${nameOf(v)}${effort ? `, effort ${effort}` : ''}${v.price ? '' : ', not in the price table'}`)
+    if (v.price) line('Next Message', `${usd(v.warm)} warm, ${usd(v.cold)} cold`)
   }
   line('Keep Warm', `${warmOn ? 'On' : 'Off'}, ${w.pings} pings (${usd(w.usd)}). /cache warm switches it.`)
   const inputs = st.read + st.write + st.uncached
-  if (st.requests) line('Cache Hit', `${pct(st.read, inputs)}% over ${st.requests} requests, saved ${usd(st.savedUsd)}, ${st.coldWrites} cold writes (${usd(st.coldUsd)})`)
+  if (st.requests && inputs) {
+    line('Cache Hit', `${pctDown(st.read, inputs)}% over ${st.requests} requests, saved ${usd(st.savedUsd)}, ${st.coldWrites} cold writes (${usd(st.coldUsd)})`)
+  }
   if (total != null) line('Session Total', usd(total))
-  for (const l of ls) line(LIMIT_NAME[l.kind] ?? l.kind, `${Math.round(l.percentUsed)}% used${l.resetsAt ? `, resets in ${resetIn(l.resetsAt, now)}` : ''}`)
+  for (const l of ls) {
+    const reset = resetIn(l.resetsAt, now)
+    line(LIMIT_NAME[l.kind] ?? l.kind, reset === 'now' ? 'Just reset' : `${Math.round(l.percentUsed)}% used${reset ? `, resets in ${reset}` : ''}`)
+  }
   return out
 }

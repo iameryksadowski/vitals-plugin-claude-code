@@ -2,173 +2,422 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-const BAND = {
-  plugin: 'cache-meter',
-  component: 'AbovePrompt',
-  props: { hasSurvey: false, isWorking: false, maxRows: 4, bodyColumns: 160, scroll: { offset: 0, bodyRows: 4 }, view: {} },
-} as const
+import { SEP } from '../hooks/band'
 
-const PANE = {
-  plugin: 'cache-meter',
-  component: 'Pane',
-  requestId: 'cache-meter',
-  props: { title: 'Prompt Cache', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
-} as const
+type $T = Parameters<TestBody>[0]
+type LimitIn = { kind: string; percentUsed: number; resetsAt?: string }
+type Usage = { model: string; input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
 
-const HOUR = 60 * 60 * 1000
-const FIVE_HOUR = { kind: 'five_hour', percentUsed: 42, resetsAt: '2026-10-31T05:00:00Z' }
-const SEVEN_DAY = { kind: 'seven_day', percentUsed: 88, resetsAt: '2026-11-03T00:00:00Z' }
+const NOW = Date.parse('2026-10-31T00:00:00Z')
+const MIN = 60 * 1000
+const HOUR = 60 * MIN
 
-/** The engine beneath the plugin: usage, model, commands, panes, and one 300k-token Opus 5.5 request. */
-const engine = (on: On, rateLimits: { kind: string; percentUsed: number; resetsAt?: string }[] = [FIVE_HOUR, SEVEN_DAY], forks = { n: 0 }) => {
-  on('session.usage', () => ({
-    value: { startedAt: 0, context: { tokens: 300_000, window: 1_000_000, percent: 30 }, rateLimits, cost: { usd: 3.5 } },
-  }))
-  on('session.model', () => ({ value: 'claude-opus-5-5' }))
-  on('command.register', () => ({ value: { command: 'cache' } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('session.start', (_, e) => ({ cwd: e.cwd }))
-  // The engine draws nothing of its own above the prompt.
-  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
-    const { Box } = $.ui.resolve(e)
-    return <Box />
-  })
-  // A Keep Warm fork the cache serves: the whole prefix read, a one-word reply.
-  on('model.fork', () => {
-    forks.n += 1
-    return {
-      value: {
-        isAnswered: true as const,
-        text: 'OK',
-        usage: { input_tokens: 30, output_tokens: 2, cache_read_input_tokens: 301_000, cache_creation_input_tokens: 0 },
-      },
-    }
-  })
-  on('turn.step', async function* (_, e) {
-    return {
-      turnId: e.turnId,
-      index: e.index,
-      answer: 'ok',
-      toolUses: [],
-      stopReason: 'end_turn',
-      usage: { model: 'claude-opus-5-5', input_tokens: 2_000, output_tokens: 1_000, cache_read_input_tokens: 290_000, cache_creation_input_tokens: 8_000 },
-    }
-  })
+const bandProps = (bodyColumns = 200, hasSurvey = false) =>
+  ({ hasSurvey, isWorking: false, maxRows: 4, bodyColumns, scroll: { offset: 0, bodyRows: 4 }, view: {} }) as const
+const band = (bodyColumns?: number, hasSurvey?: boolean) =>
+  ({ plugin: 'cache-meter', component: 'AbovePrompt', props: bandProps(bodyColumns, hasSurvey) }) as const
+const pane = (bodyColumns = 60) =>
+  ({
+    plugin: 'cache-meter',
+    component: 'Pane',
+    requestId: 'cache-meter',
+    props: { title: 'Prompt Cache', isFocused: false, bodyColumns, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
+  }) as const
+
+const FIVE_HOUR: LimitIn = { kind: 'five_hour', percentUsed: 42, resetsAt: '2026-10-31T03:10:00Z' }
+const WEEKLY: LimitIn = { kind: 'seven_day', percentUsed: 88, resetsAt: '2026-11-02T04:00:00Z' }
+
+/** One 301k-token Opus 5.5 request: 290k read, 8k written, 2k new, 1k out. */
+const OPUS: Usage = { model: 'claude-opus-5-5', input_tokens: 2_000, output_tokens: 1_000, cache_read_input_tokens: 290_000, cache_creation_input_tokens: 8_000 }
+
+type Fork = { isAnswered: true; text: string; usage: Omit<Usage, 'model'> } | { isAnswered: false; reason: 'nothing-to-fork' } | { isAnswered: false; reason: 'api-error'; status: number; error: 'overloaded'; usage: Omit<Usage, 'model'> }
+const FORK_HIT: Fork = { isAnswered: true, text: 'OK', usage: { input_tokens: 30, output_tokens: 2, cache_read_input_tokens: 301_000, cache_creation_input_tokens: 0 } }
+const FORK_MISS: Fork = { isAnswered: true, text: 'OK', usage: { input_tokens: 30, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 301_000 } }
+
+type World = {
+  limits?: LimitIn[]
+  usage?: Usage
+  cost?: number | null
+  fork?: Fork
+  placed?: boolean
+  engineRow?: boolean
 }
 
-const step = async ($: Parameters<TestBody>[0]) => {
-  const run = $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', effort: 'xhigh', messageCount: 10 })
+/** The engine beneath the plugin, with counters a test reads back. */
+const engine = (on: On, w: World = {}) => {
+  const seen = { forks: 0, logs: [] as string[], toasts: [] as string[] }
+  const state = { usage: w.usage ?? OPUS, limits: w.limits ?? [FIVE_HOUR, WEEKLY], fork: w.fork ?? FORK_HIT }
+  on('session.usage', () => ({
+    value: {
+      startedAt: 0,
+      context: { tokens: 300_000, window: 1_000_000, percent: 30 },
+      rateLimits: state.limits,
+      cost: w.cost === null ? undefined : { usd: w.cost ?? 3.5 },
+    },
+  }))
+  on('session.model', () => ({ value: state.usage.model }))
+  on('command.register', () => ({ value: { command: 'cache' } }))
+  on('ui.open', () => ({ value: w.placed === false ? { isPlaced: false as const, reason: 'no room for a pane' } : { isPlaced: true as const } }))
+  on('ui.log', (_, e) => {
+    seen.logs.push(String((e as { text?: unknown }).text ?? ''))
+    return { value: undefined }
+  })
+  on('ui.toast', (_, e) => {
+    seen.toasts.push(String((e as { text?: unknown }).text ?? ''))
+    return { value: undefined }
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Box, Text } = $.ui.resolve(e)
+    return w.engineRow ? <Text>engine row</Text> : <Box />
+  })
+  on('model.fork', () => {
+    seen.forks += 1
+    return { value: state.fork }
+  })
+  on('turn.step', async function* (_, e) {
+    return { turnId: e.turnId, index: e.index, answer: 'ok', toolUses: [], stopReason: 'end_turn', usage: state.usage }
+  })
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('classic.SessionStart', () => ({}))
+  on('classic.PostModelSwitch', () => ({}))
+  return { seen, state }
+}
+
+const start = async ($: $T) => $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+
+const step = async ($: $T, extra: { agentId?: string; effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | number } = {}) => {
+  const run = $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', effort: extra.effort ?? 'xhigh', messageCount: 10, ...(extra.agentId ? { agentId: extra.agentId } : {}) })
   for await (const _ of run) void _
 }
 
-test('the band waits for the first reply, then shows a warm cache and the usage windows', async ($, on) => {
-  engine(on)
-  mock.clock(on, { now: 1_000_000 })
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+/** /cache as typed, with whatever follows it. */
+const cache = async ($: $T, args = '') => ((await $.command.run({ command: 'cache', args } as never)) as { text?: string }).text ?? ''
 
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({ ...BAND, surface })
-    expect((await ui.find({ type: 'Text', text: /Waiting for the first reply/ }))?.text).toContain('Waiting')
-    await ui.unmount()
+const send = ($: $T, text: string, kind = 'composer') => $.prompt.submit({ text, origin: { kind } as never, wait: false })
+
+/** The band as one line of text, as a person reads it. */
+const bandLine = async ($: $T, columns = 200, surface: 'terminal' | 'desktop' = 'desktop') => {
+  const ui = await $.ui.mount({ ...band(columns), surface })
+  const texts = await ui.findAll({ type: 'Text' })
+  const details = await ui.find({ type: 'Button' })
+  await ui.unmount()
+  return { line: texts.map(t => t.text).join(''), texts, hasDetails: details !== undefined }
+}
+
+/** No doubled or stray spaces anywhere: one between pieces, the separator between parts. */
+const expectTidy = (line: string) => {
+  for (const part of line.split(SEP)) {
+    expect([line, part]).toEqual([line, part.trim()])
+    expect([line, part.includes('  ')]).toEqual([line, false])
+    expect([line, part.length > 0]).toEqual([line, true])
   }
+}
 
-  await step($)
+const texts = async (ui: { findAll: (q: { type: 'Text' }) => Promise<Array<{ text: string }>> }) => (await ui.findAll({ type: 'Text' })).map(t => t.text)
 
+const switchModel = ($: $T, to: string, from = 'claude-opus-5-5', ttl: '5m' | '1h' = '1h') =>
+  $.classic.PostModelSwitch({
+    from_model: from,
+    to_model: to,
+    requested_model: to,
+    source: 'command',
+    context_tokens: 301_000,
+    prompt_cache_warm: true,
+    cache_ttl: ttl,
+    estimated_cache_write_usd: 1,
+    pricing: 'catalog',
+  } as never)
+
+// ── The band ────────────────────────────────────────────────────────────────
+
+test('before the first reply the band waits, tidy, with no figures it does not have', async ($, on) => {
+  engine(on)
+  mock.clock(on, { now: NOW })
+  await start($)
   for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({ ...BAND, surface })
-    expect(await ui.find({ type: 'Text', text: 'Warm' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '1h 00m left' })).toBeDefined()
-    // 301k tokens read at $0.20/MTok.
-    expect(await ui.find({ type: 'Text', text: '$0.06' })).toBeDefined()
-    // ...and written at the 1h rate, $8/MTok, once cold.
-    expect(await ui.find({ type: 'Text', text: '$2.41' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '88%' })).toBeDefined()
-    await ui.unmount()
+    const { line, hasDetails } = await bandLine($, 200, surface)
+    expectTidy(line)
+    expect(line.startsWith('○ Prompt Cache Waiting for the first reply')).toBe(true)
+    // The limits and the session cost are known before any reply; the cache figures are not.
+    for (const none of ['Hit Rate', 'Next', 'If Cold', 'Context']) expect(line).not.toContain(none)
+    expect(line).toContain('Weekly 88% 2d 4h')
+    expect(hasDetails).toBe(true)
   }
 })
 
-test('a plan held to the 7d window alone shows the weekly limit and no 5-hour one, and keeps the 1h TTL', async ($, on) => {
-  // Ultra: the API reports seven_day only; an idle five_hour (nothing used, no reset) is left out too.
-  engine(on, [{ kind: 'five_hour', percentUsed: 0 }, SEVEN_DAY])
-  // Three days before the weekly reset, so its countdown reads as it would.
-  mock.clock(on, { now: Date.parse('2026-10-31T00:00:00Z') })
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+test('a warm cache reads exactly as expected, in reading order', async ($, on) => {
+  engine(on)
+  mock.clock(on, { now: NOW })
+  await start($)
   await step($)
+  const { line } = await bandLine($)
+  expectTidy(line)
+  expect(line).toBe(
+    [
+      '● Cache Warm 1h 00m left',
+      'Next $0.06',
+      'If Cold $2.41',
+      'Context 301k 30%',
+      'Hit Rate 96%',
+      '5-Hour 42% 3h 10m',
+      'Weekly 88% 2d 4h',
+      'Session $3.50',
+    ].join(SEP),
+  )
+})
 
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const band = await $.ui.mount({ ...BAND, surface })
-    expect(await band.find({ type: 'Text', text: 'Weekly ' })).toBeDefined()
-    expect(await band.find({ type: 'Text', text: '5-Hour ' })).toBeUndefined()
-    expect(await band.find({ type: 'Text', text: '1h 00m left' })).toBeDefined()
-    await band.unmount()
-
-    // On a narrow band the weekly limit outlasts everything but the cache state.
-    const narrow = await $.ui.mount({ ...BAND, surface, props: { ...BAND.props, bodyColumns: 80 } })
-    expect(await narrow.find({ type: 'Text', text: 'Weekly ' })).toBeDefined()
-    expect(await narrow.find({ type: 'Text', text: '  3d 0h' })).toBeDefined()
-    expect(await narrow.find({ type: 'Text', text: '1h 00m left' })).toBeDefined()
-    await narrow.unmount()
-
-    const pane = await $.ui.mount({ ...PANE, surface })
-    expect(await pane.find({ type: 'Text', text: 'Weekly' })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: '5-Hour' })).toBeUndefined()
-    await pane.unmount()
+test('at every width the band stays tidy, fits, and keeps the cache state and the main limit longest', async ($, on) => {
+  engine(on, { limits: [WEEKLY] })
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  for (let columns = 10; columns <= 220; columns += 5) {
+    const { line, hasDetails } = await bandLine($, columns)
+    expectTidy(line)
+    expect([columns, line.includes('Cache Warm')]).toEqual([columns, true])
+    const parts = line.split(SEP).length
+    // Room for the parts, the row's padding and Details beside them.
+    if (parts > 1) expect([columns, line.length + 2 + (hasDetails ? 9 : 0) <= columns]).toEqual([columns, true])
+    // The weekly limit goes only after everything but the state is gone.
+    if (line.includes('Next') || line.includes('Context')) expect([columns, line.includes('Weekly 88% 2d 4h')]).toEqual([columns, true])
   }
 })
 
-test('after the TTL the band turns cold and the first send is held once with its price', async ($, on) => {
-  engine(on)
-  const clock = mock.clock(on, { now: 1_000_000 })
-  on('prompt.submit', (_, e) => ({ text: e.text }))
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+test('a plan with the weekly limit alone shows Weekly and no 5-hour limit, and caches for an hour', async ($, on) => {
+  engine(on, { limits: [{ kind: 'five_hour', percentUsed: 0 }, WEEKLY] })
+  mock.clock(on, { now: NOW })
+  await start($)
   await step($)
-  await clock.advance(HOUR + 5 * 60 * 1000)
+  const { line } = await bandLine($)
+  expect(line).toContain('Weekly 88% 2d 4h')
+  expect(line).not.toContain('5-Hour')
+  expect(line).toContain('1h 00m left')
+  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: 'Weekly' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '5-Hour' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'TTL 1h' })).toBeDefined()
+  await ui.unmount()
+})
 
-  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: 'Cold' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: 'Idle 1h 05m' })).toBeDefined()
+test('an API key with no limits caches for 5 minutes and shows no limit', async ($, on) => {
+  engine(on, { limits: [], cost: 0.42 })
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  let { line } = await bandLine($)
+  expect(line).toContain('Warm 5m left')
+  expect(line).toContain('If Cold $1.51')
+  expect(line).not.toContain('Weekly')
+  await clock.advance(5 * MIN)
+  ;({ line } = await bandLine($))
+  expect(line).toContain('Cold Idle 5m')
+})
+
+test('the ttl setting wins over the guess', { options: { ttl: '5m' } }, async ($, on) => {
+  engine(on)
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  expect((await bandLine($)).line).toContain('Warm 5m left')
+})
+
+test('the TTL the engine reports wins over the guess', async ($, on) => {
+  engine(on)
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await switchModel($, 'claude-opus-5-5', 'claude-opus-5-5', '5m')
+  expect((await bandLine($)).line).toContain('Warm 5m left')
+})
+
+test('in the last ten minutes the countdown turns to a warning', async ($, on) => {
+  engine(on)
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await clock.advance(51 * MIN)
+  const ui = await $.ui.mount({ ...band(), surface: 'desktop' })
+  const left = await ui.find({ type: 'Text', text: '9m left' })
+  expect(left?.props.color).toBe('warning')
+  expect((await ui.find({ type: 'Text', text: 'Warm' }))?.props.color).toBe('warning')
+  await ui.unmount()
+})
+
+test('a cold cache shows the idle time and the re-cache price, and no warm figures', async ($, on) => {
+  engine(on)
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await clock.advance(HOUR + 5 * MIN)
+  const { line } = await bandLine($)
+  expectTidy(line)
+  expect(line).toContain('● Cache Cold Idle 1h 05m')
+  expect(line).toContain('Next $2.41 Re-cache')
+  expect(line).not.toContain('If Cold')
+  expect(line).not.toContain('left')
+})
+
+test('a model switch makes the cache cold at once, priced on the new model, until its first reply', async ($, on) => {
+  const { state } = engine(on)
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await switchModel($, 'claude-sonnet-5-5')
+  let { line } = await bandLine($)
+  expect(line).toContain('Cache Cold Model changed')
+  // 301k written on Sonnet 5.5 at the 1h rate, $4/MTok.
+  expect(line).toContain('Next $1.20 Re-cache')
+  const held = await send($, 'go on')
+  expect(held.drop).toContain('The model changed to Sonnet 5.5')
+  expect(held.drop).not.toContain('a warm read')
+  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: 'Sonnet 5.5' })).toBeDefined()
   await ui.unmount()
 
-  const first = await $.prompt.submit({ text: 'what next?', origin: { kind: 'composer' }, wait: false })
-  expect(first.drop).toContain('went cold 5m ago')
-  expect(first.drop).toContain('$2.41')
-  const again = await $.prompt.submit({ text: 'what next?', origin: { kind: 'composer' }, wait: false })
-  expect(again.drop).toBeUndefined()
-
-  // A slash command is never held.
-  await clock.advance(HOUR)
-  const slash = await $.prompt.submit({ text: '/clear', origin: { kind: 'composer' }, wait: false })
-  expect(slash.drop).toBeUndefined()
+  state.usage = { ...OPUS, model: 'claude-sonnet-5-5' }
+  await step($)
+  ;({ line } = await bandLine($))
+  expect(line).toContain('Cache Warm 1h 00m left')
 })
 
-test('the guard can be switched off', { options: { guard: 'off' } }, async ($, on) => {
+test('a switch to the same model changes nothing', async ($, on) => {
   engine(on)
-  const clock = mock.clock(on, { now: 1_000_000 })
-  on('prompt.submit', (_, e) => ({ text: e.text }))
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  mock.clock(on, { now: NOW })
+  await start($)
   await step($)
+  await switchModel($, 'claude-opus-5-5')
+  expect((await bandLine($)).line).toContain('Cache Warm')
+})
+
+test('a model the price table does not know shows no prices, never n/a, and is named from its id', async ($, on) => {
+  engine(on, { usage: { ...OPUS, model: 'claude-opus-5-1' } })
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  const { line } = await bandLine($)
+  expectTidy(line)
+  expect(line).not.toContain('Next')
+  expect(line).not.toContain('If Cold')
+  expect(line).not.toContain('n/a')
+  expect(line).toContain('Context 301k 30%')
+  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: 'Opus 5.1' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Not in the price table/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Next Message' })).toBeUndefined()
+  await ui.unmount()
   await clock.advance(2 * HOUR)
-  const r = await $.prompt.submit({ text: 'hi', origin: { kind: 'composer' }, wait: false })
-  expect(r.drop).toBeUndefined()
+  const held = await send($, 'hi')
+  expect(held.drop).toContain('re-writes ~301k tokens on Opus 5.1.')
+  expect(held.drop).not.toContain('$')
 })
 
-test('the pane breaks down the cache, the session and the windows on every surface', async ($, on) => {
+test('subagent requests never touch the main thread figures', async ($, on) => {
   engine(on)
-  mock.clock(on, { now: 1_000_000 })
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  await step($)
-  await step($)
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($, { agentId: 'a1' })
+  const { line } = await bandLine($)
+  expect(line).toContain('Waiting for the first reply')
+  expect(line).not.toContain('Hit Rate')
+})
 
-  for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
-    const ui = await $.ui.mount({ ...PANE, surface })
-    expect(await ui.find({ type: 'Text', text: 'Prompt Cache' })).toBeDefined()
-    // 580k read of 600k input.
-    expect(await ui.find({ type: 'Text', text: '97%' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /^  ·  \d+d \d+h$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'Opus 5.5' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'Extra High' })).toBeDefined()
-    await ui.unmount()
-  }
+test('/clear starts over: no state, no session figures', async ($, on) => {
+  engine(on)
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await $.classic.SessionStart({ source: 'clear' } as never)
+  const { line } = await bandLine($)
+  expect(line).toContain('Waiting for the first reply')
+  expect(line).not.toContain('Hit Rate')
+})
+
+test('after compaction the state waits for the next reply and the session figures stay', async ($, on) => {
+  engine(on)
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await $.classic.SessionStart({ source: 'compact' } as never)
+  const { line } = await bandLine($)
+  expect(line).toContain('Waiting for the next reply')
+  expect(line).toContain('Hit Rate 96%')
+  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: 'Known after the next reply' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a resumed session knows how long it was away', async ($, on) => {
+  engine(on)
+  mock.clock(on, { now: NOW })
+  await start($)
+  await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: 120, context_tokens: 301_000, model: 'claude-opus-5-5' } as never)
+  expect((await bandLine($)).line).toContain('Cache Warm 58m left')
+  await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: 4_000, context_tokens: 301_000, model: 'claude-opus-5-5' } as never)
+  expect((await bandLine($)).line).toContain('Cache Cold Idle 1h 06m')
+})
+
+test('a limit past its reset says so instead of showing the old figure', async ($, on) => {
+  engine(on, { limits: [{ kind: 'seven_day', percentUsed: 97, resetsAt: '2026-10-30T23:00:00Z' }] })
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  const { line } = await bandLine($)
+  expect(line).toContain('Weekly Just reset')
+  expect(line).not.toContain('97%')
+  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Just reset/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('limits are calm under 80%, a warning to 95%, then an error', async ($, on) => {
+  engine(on, { limits: [{ kind: 'seven_day', percentUsed: 97, resetsAt: '2026-11-02T04:00:00Z' }] })
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  const ui = await $.ui.mount({ ...band(), surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: '97%' }))?.props.color).toBe('error')
+  await ui.unmount()
+})
+
+test('a limit with a bad figure is left out rather than drawn wrong', async ($, on) => {
+  engine(on, { limits: [{ kind: 'seven_day', percentUsed: Number.NaN, resetsAt: '2026-11-02T04:00:00Z' }] })
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  const { line } = await bandLine($)
+  expect(line).not.toContain('Weekly')
+  expect(line).not.toContain('NaN')
+})
+
+test('no session cost yet means no Session part', async ($, on) => {
+  engine(on, { cost: null })
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  expect((await bandLine($)).line).not.toContain('Session')
+})
+
+test('while a survey shows, the band steps aside', async ($, on) => {
+  engine(on)
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  const ui = await $.ui.mount({ ...band(200, true), surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: 'Cache' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('what the engine draws above the prompt stays, the band goes under it', async ($, on) => {
+  engine(on, { engineRow: true })
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  const ui = await $.ui.mount({ ...band(), surface: 'desktop' })
+  const all = await texts(ui)
+  expect(all.indexOf('engine row')).toBe(0)
+  expect(all).toContain('Cache')
+  await ui.unmount()
 })
 
 test('a value an earlier version stored is declined', async ($, on) => {
@@ -178,52 +427,204 @@ test('a value an earlier version stored is declined', async ($, on) => {
     const { Box } = $.ui.resolve(e)
     return <Box />
   })
-  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const ui = await $.ui.mount({ ...band(), surface: 'desktop' })
   expect(await ui.find({ type: 'Text', text: /Waiting for the first reply/ })).toBeDefined()
   await ui.unmount()
 })
 
-test('Keep Warm is off by default and switched on from the pane', async ($, on) => {
-  const forks = { n: 0 }
-  engine(on, [SEVEN_DAY], forks)
-  const clock = mock.clock(on, { now: 1_000_000 })
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  await step($)
-  await clock.advance(HOUR + 60 * 1000)
-  expect(forks.n).toBe(0)
+// ── The pane ────────────────────────────────────────────────────────────────
 
-  // A fresh reply, then the toggle in the pane.
+test('the pane breaks everything down on every surface and at any width', async ($, on) => {
+  engine(on)
+  mock.clock(on, { now: NOW })
+  await start($)
   await step($)
-  const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await pane.find({ type: 'Text', text: 'Off' })).toBeDefined()
-  await pane.press({ key: 'keep-warm-toggle' })
-  await pane.unmount()
-
-  const again = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await again.find({ type: 'Text', text: 'On' })).toBeDefined()
-  await again.unmount()
+  await step($)
+  for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
+    for (const columns of [24, 40, 60, 120]) {
+      const ui = await $.ui.mount({ ...pane(columns), surface })
+      const all = await texts(ui)
+      for (const want of ['Prompt Cache', 'Next Message', 'Keep Warm', 'This Session', 'Usage Limits', 'Opus 5.5', 'Extra High', '96%', '2']) {
+        expect([surface, columns, want, all.includes(want)]).toEqual([surface, columns, want, true])
+      }
+      expect(all.some(t => t.includes('n/a') || t.includes('NaN') || t.includes('undefined'))).toBe(false)
+      await ui.unmount()
+    }
+  }
 })
 
-test('Keep Warm pings once before the TTL ends and stops after its window', { options: { keepWarm: 'on', keepWarmFor: '1h' } }, async ($, on) => {
-  const forks = { n: 0 }
-  engine(on, [SEVEN_DAY], forks)
-  const clock = mock.clock(on, { now: 1_000_000 })
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+test('the pane shows the effort as the request asked for it', async ($, on) => {
+  engine(on)
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($, { effort: 32_000 })
+  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: '32k budget' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('/cache opens the pane, or prints the figures where no pane can be seated', async ($, on) => {
+  engine(on, { placed: false, limits: [WEEKLY] })
+  mock.clock(on, { now: NOW })
+  await start($)
   await step($)
+  const text = await cache($)
+  expect(text).toContain('Prompt Cache  Warm, 1h 00m left (TTL 1h)')
+  expect(text).toContain('Model         Opus 5.5, effort Extra High')
+  expect(text).toContain('Next Message  $0.06 warm, $2.41 cold')
+  expect(text).toContain('Weekly        88% used, resets in 2d 4h')
+  expect(text).not.toContain('n/a')
+})
 
-  // Five minutes before the hour runs out, one fork reads the cache and starts the TTL over.
-  await clock.advance(HOUR - 4 * 60 * 1000)
-  expect(forks.n).toBe(1)
-  await clock.advance(10 * 60 * 1000)
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await band.find({ type: 'Text', text: 'Warm' })).toBeDefined()
-  expect(await band.find({ type: 'Text', text: '  Kept Warm' })).toBeDefined()
-  await band.unmount()
+test('/cache with a pane says where it went', async ($, on) => {
+  engine(on)
+  mock.clock(on, { now: NOW })
+  await start($)
+  expect(await cache($)).toBe('Prompt Cache details are open in the side pane.')
+})
 
-  // Past the 1h window after the last message it lets the cache go.
+// ── The cold send guard ─────────────────────────────────────────────────────
+
+test('the first message into a cold cache is held once with its price; the resend goes', async ($, on) => {
+  engine(on)
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await clock.advance(HOUR + 5 * MIN)
+  const first = await send($, 'what next?')
+  expect(first.drop).toBe(
+    'Cache Meter: The prompt cache went cold 5m ago. This message re-writes ~301k tokens on Opus 5.5 for $2.41 (a warm read would be $0.06). Send it again to go ahead, or /clear and start from a short summary.',
+  )
+  expect((await send($, 'what next?')).drop).toBeUndefined()
+})
+
+test('the guard lets through warm sends, small contexts, commands and prompts nobody typed', async ($, on) => {
+  const { state } = engine(on)
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  expect((await send($, 'warm still')).drop).toBeUndefined()
   await clock.advance(2 * HOUR)
-  expect(forks.n).toBe(1)
-  const cold = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await cold.find({ type: 'Text', text: 'Cold' })).toBeDefined()
-  await cold.unmount()
+  expect((await send($, '/clear')).drop).toBeUndefined()
+  expect((await send($, 'a scheduled prompt', 'task-notification')).drop).toBeUndefined()
+  expect((await send($, 'from the phone', 'bridge')).drop).toContain('went cold')
+
+  state.usage = { ...OPUS, cache_read_input_tokens: 30_000, cache_creation_input_tokens: 0 }
+  await step($)
+  await clock.advance(2 * HOUR)
+  expect((await send($, 'small context')).drop).toBeUndefined()
+})
+
+test('guard warn only logs the price and lets the message through', { options: { guard: 'warn' } }, async ($, on) => {
+  const { seen } = engine(on)
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await clock.advance(2 * HOUR)
+  expect((await send($, 'hi')).drop).toBeUndefined()
+  expect(seen.logs.join('\n')).toContain('went cold 1h 00m ago')
+})
+
+test('guard off never holds', { options: { guard: 'off' } }, async ($, on) => {
+  engine(on)
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await clock.advance(2 * HOUR)
+  expect((await send($, 'hi')).drop).toBeUndefined()
+})
+
+// ── Keep Warm ───────────────────────────────────────────────────────────────
+
+test('Keep Warm is off by default and never pings', async ($, on) => {
+  const { seen } = engine(on)
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await clock.advance(3 * HOUR)
+  expect(seen.forks).toBe(0)
+})
+
+test('Keep Warm switches from the pane and with /cache warm', async ($, on) => {
+  engine(on)
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: 'Off' })).toBeDefined()
+  await ui.press({ key: 'keep-warm-toggle' })
+  await ui.unmount()
+  const after = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  expect(await after.find({ type: 'Text', text: 'On' })).toBeDefined()
+  await after.unmount()
+  expect(await cache($, 'warm off')).toBe('Keep Warm is off for this session.')
+  expect(await cache($, 'warm on')).toBe('Keep Warm is on for this session.')
+  expect(await cache($, 'warm')).toBe('Keep Warm is off for this session.')
+})
+
+test('Keep Warm pings five minutes before the end, keeps it warm, and stops after its window', { options: { keepWarm: 'on', keepWarmFor: '2h' } }, async ($, on) => {
+  const { seen } = engine(on)
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await clock.advance(54 * MIN)
+  expect(seen.forks).toBe(0)
+  await clock.advance(2 * MIN)
+  expect(seen.forks).toBe(1)
+  let { line } = await bandLine($)
+  expect(line).toContain('Warm')
+  expect(line).toContain('Kept Warm')
+  await clock.advance(HOUR)
+  expect(seen.forks).toBe(2)
+  // Past two hours after the last message it lets go.
+  await clock.advance(3 * HOUR)
+  expect(seen.forks).toBe(2)
+  ;({ line } = await bandLine($))
+  expect(line).toContain('Cold')
+  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: '2' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a ping that finds the cache gone switches Keep Warm off and says so', { options: { keepWarm: 'on' } }, async ($, on) => {
+  const { seen } = engine(on, { fork: FORK_MISS })
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await clock.advance(56 * MIN)
+  expect(seen.forks).toBe(1)
+  expect(seen.toasts.join('\n')).toContain('switched itself off')
+  await clock.advance(2 * HOUR)
+  expect(seen.forks).toBe(1)
+  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /1 too late/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a fork with nothing to fork or an API error changes nothing', { options: { keepWarm: 'on' } }, async ($, on) => {
+  const { seen, state } = engine(on, { fork: { isAnswered: false, reason: 'nothing-to-fork' } })
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await clock.advance(56 * MIN)
+  expect(seen.forks).toBeGreaterThan(0)
+  state.fork = { isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded', usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }
+  await clock.advance(MIN)
+  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: 'On' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /too late/ })).toBeUndefined()
+  await ui.unmount()
+  // Never counted as a ping, so the cache still runs out on time.
+  await clock.advance(5 * MIN)
+  expect((await bandLine($)).line).toContain('Cold')
+})
+
+test('Keep Warm never pings a cache the model switch already lost', { options: { keepWarm: 'on' } }, async ($, on) => {
+  const { seen } = engine(on)
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await switchModel($, 'claude-sonnet-5-5')
+  await clock.advance(56 * MIN)
+  expect(seen.forks).toBe(0)
 })

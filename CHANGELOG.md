@@ -2,6 +2,29 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-10-31
+
+### Changed
+
+- One spacing rule in the band: one space inside a part, the `│` separator between parts.
+- Parts are kept strictly by priority as the band narrows, and the cache state is always drawn (Details gives way first).
+- The hit rate rounds down: 99.6% reads 99%, never 100%.
+- A model the price table does not know shows no prices instead of `n/a`, and models are named from their id (Sonnet 4.6, Opus 5.1).
+- Price rows match whole versions only, so an unknown version is never priced as its neighbour. Added Opus 4.1, Sonnet 4.5 and 4.6, Sonnet 3.7, Haiku 3, Opus 3, and long-context prices for Sonnet 4.x.
+
+### Fixed
+
+- After a model switch the band showed the old model's warm cache; it now shows Cold, "Model changed", priced on the new model, and the guard and Keep Warm follow.
+- The engine's own cache TTL, when it reports one, is used instead of the guess.
+- The context share of the window was missing until the engine reported the window separately.
+- Token counts between 999.5k and 1M read "1000k"; cents half way between were rounded down ($1.505 read $1.50).
+- A usage limit past its reset showed the old figure with "now"; it says "Just reset".
+- A limit with no valid figure is left out instead of drawn as NaN.
+
+### Added
+
+- 49 tests: formatting, prices, the cache view at its edges, the band at every width from 10 to 220 columns, the pane on every surface, the guard, Keep Warm, model switches, /clear, compaction and resume.
+
 ## [0.1.3] - 2026-10-31
 
 ### Changed

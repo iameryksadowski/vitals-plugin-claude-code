@@ -326,13 +326,13 @@ export const register: Register = (on, options) => {
       })
       segs.push(
         cold
-          ? { key: 'next', prio: 1, pieces: [{ t: 'Next ', dim: true }, { t: usd(view.cold), color: 'error', bold: true }, { t: '  Re-cache', dim: true }] }
-          : { key: 'next', prio: 1, pieces: [{ t: 'Next ', dim: true }, { t: usd(view.warm), bold: true }] },
+          ? { key: 'next', prio: 2, pieces: [{ t: 'Next ', dim: true }, { t: usd(view.cold), color: 'error', bold: true }, { t: '  Re-cache', dim: true }] }
+          : { key: 'next', prio: 2, pieces: [{ t: 'Next ', dim: true }, { t: usd(view.warm), bold: true }] },
       )
       if (!cold) segs.push({ key: 'cold', prio: 4, pieces: [{ t: 'If Cold ', dim: true }, { t: usd(view.cold) }] })
       segs.push({
         key: 'ctx',
-        prio: 2,
+        prio: 3,
         pieces: [{ t: 'Context ', dim: true }, { t: tok(view.ctx) }, ...(view.window ? [{ t: `  ${pct(view.ctx, view.window)}%`, dim: true }] : [])],
       })
     }
@@ -343,7 +343,8 @@ export const register: Register = (on, options) => {
       const reset = resetIn(w.resetsAt, now)
       segs.push({
         key: `limit-${w.kind}`,
-        prio: i === 0 ? 2 : 3,
+        // The plan's main limit stays in the band as long as the cache state does.
+        prio: i === 0 ? 1 : 3,
         pieces: [
           { t: `${LIMIT_NAME[w.kind] ?? w.kind} `, dim: true },
           { t: `${used}%`, color: limitTone(used), bold: true },
@@ -391,7 +392,7 @@ export const register: Register = (on, options) => {
           <Text weight="semibold">{p.title}</Text>
           {p.note ?? null}
         </Box>
-        {p.children}
+        <Box flexDirection="column" rowGap="xs">{p.children}</Box>
       </Box>
     )
     const Row = (p: { k: string; label: string; children: RenderChildren }) => (

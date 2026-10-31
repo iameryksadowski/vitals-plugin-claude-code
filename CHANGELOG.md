@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-10-31
+
+### Changed
+
+- The band keeps the plan's main usage limit (Weekly on Ultra) with its time to reset right after the cache state, so it stays on narrow windows.
+- A little space between the rows of each card in the pane, easier to read on small screens.
+
 ## [0.1.0] - 2026-10-31
 
 ### Added

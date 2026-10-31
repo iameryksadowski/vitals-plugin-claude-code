@@ -90,7 +90,8 @@ test('the band waits for the first reply, then shows a warm cache and the usage 
 test('a plan held to the 7d window alone shows the weekly limit and no 5-hour one, and keeps the 1h TTL', async ($, on) => {
   // Ultra: the API reports seven_day only; an idle five_hour (nothing used, no reset) is left out too.
   engine(on, [{ kind: 'five_hour', percentUsed: 0 }, SEVEN_DAY])
-  mock.clock(on, { now: 1_000_000 })
+  // Three days before the weekly reset, so its countdown reads as it would.
+  mock.clock(on, { now: Date.parse('2026-10-31T00:00:00Z') })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await step($)
 
@@ -100,6 +101,13 @@ test('a plan held to the 7d window alone shows the weekly limit and no 5-hour on
     expect(await band.find({ type: 'Text', text: '5-Hour ' })).toBeUndefined()
     expect(await band.find({ type: 'Text', text: '1h 00m left' })).toBeDefined()
     await band.unmount()
+
+    // On a narrow band the weekly limit outlasts everything but the cache state.
+    const narrow = await $.ui.mount({ ...BAND, surface, props: { ...BAND.props, bodyColumns: 80 } })
+    expect(await narrow.find({ type: 'Text', text: 'Weekly ' })).toBeDefined()
+    expect(await narrow.find({ type: 'Text', text: /Resets in/ })).toBeDefined()
+    expect(await narrow.find({ type: 'Text', text: '1h 00m left' })).toBeDefined()
+    await narrow.unmount()
 
     const pane = await $.ui.mount({ ...PANE, surface })
     expect(await pane.find({ type: 'Text', text: 'Weekly' })).toBeDefined()

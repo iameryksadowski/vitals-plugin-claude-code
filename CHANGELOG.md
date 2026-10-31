@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.1.3] - 2026-10-31
+
+### Changed
+
+- Time to a usage limit's reset is a plain gray countdown (`2d 4h`), without "Resets in".
+- When the cache state is not known yet but the session already has requests (after a plugin update or restart), the band says "Waiting for the next reply" instead of "first reply".
+
 ## [0.1.2] - 2026-10-31
 
 ### Added

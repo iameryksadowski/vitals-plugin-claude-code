@@ -1,6 +1,6 @@
 {
   "name": "cache-meter",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "A quiet meter above the prompt: prompt cache warm or cold, time left, context size, what the next message costs warm and cold, cache hit rate and your usage limits. /cache opens the full breakdown, with an optional Keep Warm.",
   "icon": "./.claude-plugin/icon.png",
   "author": {

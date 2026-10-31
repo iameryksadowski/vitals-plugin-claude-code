@@ -23,40 +23,77 @@ export const COLD_WRITE_MIN = 20_000
 /**
  * $ per million tokens: base input, output, cache read. A cache write is
  * 1.25x input on the 5m TTL and 2x on the 1h TTL. List prices, October 2026.
- * More specific ids first: a model id takes the first row it contains.
+ * A row matches a model id only as a whole version: `opus-5` is Opus 5 and
+ * never Opus 5.1, so a model this table does not know is priced at nothing
+ * rather than at a neighbour's price. A date after the version still matches.
  */
 export type Price = { name: string; input: number; output: number; read: number }
+type Rate = Omit<Price, 'name'>
 
-const PRICES: Array<[string, Price]> = [
-  ['fable-5-1', { name: 'Fable 5.1', input: 10, output: 50, read: 0.25 }],
-  ['mythos-5-1', { name: 'Mythos 5.1', input: 10, output: 50, read: 0.25 }],
-  ['fable-5', { name: 'Fable 5', input: 10, output: 50, read: 1 }],
-  ['mythos-5', { name: 'Mythos 5', input: 10, output: 50, read: 1 }],
-  ['opus-5-5', { name: 'Opus 5.5', input: 4, output: 20, read: 0.2 }],
-  ['opus-5', { name: 'Opus 5', input: 5, output: 25, read: 0.5 }],
-  ['opus-4-8', { name: 'Opus 4.8', input: 5, output: 25, read: 0.5 }],
-  ['opus-4-7', { name: 'Opus 4.7', input: 5, output: 25, read: 0.5 }],
-  ['opus-4-6', { name: 'Opus 4.6', input: 5, output: 25, read: 0.5 }],
-  ['opus-4-5', { name: 'Opus 4.5', input: 5, output: 25, read: 0.5 }],
-  ['opus-4', { name: 'Opus 4', input: 15, output: 75, read: 1.5 }],
-  ['sonnet-5-5', { name: 'Sonnet 5.5', input: 2, output: 10, read: 0.2 }],
-  ['sonnet-5', { name: 'Sonnet 5', input: 2, output: 10, read: 0.2 }],
-  ['sonnet', { name: 'Sonnet 4', input: 3, output: 15, read: 0.3 }],
-  ['haiku-5-5', { name: 'Haiku 5.5', input: 0.1, output: 0.5, read: 0.01 }],
-  ['haiku-4-5', { name: 'Haiku 4.5', input: 1, output: 5, read: 0.1 }],
-  ['haiku', { name: 'Haiku 3.5', input: 0.8, output: 4, read: 0.08 }],
+const PRICES: Array<[string, Rate]> = [
+  ['fable-5-1', { input: 10, output: 50, read: 0.25 }],
+  ['mythos-5-1', { input: 10, output: 50, read: 0.25 }],
+  ['fable-5', { input: 10, output: 50, read: 1 }],
+  ['mythos-5', { input: 10, output: 50, read: 1 }],
+  ['opus-5-5', { input: 4, output: 20, read: 0.2 }],
+  ['opus-5', { input: 5, output: 25, read: 0.5 }],
+  ['opus-4-8', { input: 5, output: 25, read: 0.5 }],
+  ['opus-4-7', { input: 5, output: 25, read: 0.5 }],
+  ['opus-4-6', { input: 5, output: 25, read: 0.5 }],
+  ['opus-4-5', { input: 5, output: 25, read: 0.5 }],
+  ['opus-4-1', { input: 15, output: 75, read: 1.5 }],
+  ['opus-4', { input: 15, output: 75, read: 1.5 }],
+  ['3-opus', { input: 15, output: 75, read: 1.5 }],
+  ['sonnet-5-5', { input: 2, output: 10, read: 0.2 }],
+  ['sonnet-5', { input: 2, output: 10, read: 0.2 }],
+  ['sonnet-4-6', { input: 3, output: 15, read: 0.3 }],
+  ['sonnet-4-5', { input: 3, output: 15, read: 0.3 }],
+  ['sonnet-4', { input: 3, output: 15, read: 0.3 }],
+  ['3-7-sonnet', { input: 3, output: 15, read: 0.3 }],
+  ['3-5-sonnet', { input: 3, output: 15, read: 0.3 }],
+  ['haiku-5-5', { input: 0.1, output: 0.5, read: 0.01 }],
+  ['haiku-4-5', { input: 1, output: 5, read: 0.1 }],
+  ['3-5-haiku', { input: 0.8, output: 4, read: 0.08 }],
+  ['3-haiku', { input: 0.25, output: 1.25, read: 0.03 }],
 ]
 
-/** Haiku 5.5 prompts over 100k tokens are priced at this row instead. */
-const HAIKU_LONG: Price = { name: 'Haiku 5.5', input: 0.5, output: 2.5, read: 0.05 }
-const LONG_PROMPT = 100_000
+/** Rows whose prompts over a threshold are priced higher: Haiku 5.5 past 100k, Sonnet 4.x past 200k. */
+const LONG: Array<[string, number, Rate]> = [
+  ['haiku-5-5', 100_000, { input: 0.5, output: 2.5, read: 0.05 }],
+  ['sonnet-4-6', 200_000, { input: 6, output: 22.5, read: 0.6 }],
+  ['sonnet-4-5', 200_000, { input: 6, output: 22.5, read: 0.6 }],
+  ['sonnet-4', 200_000, { input: 6, output: 22.5, read: 0.6 }],
+]
+
+/** A model id as one lowercase run: no `[1m]` tags, dots, spaces or `@` (Bedrock and Vertex ids). */
+const normalize = (model: string | null | undefined): string =>
+  (model ?? '').toLowerCase().replace(/\[.*?\]/g, '').replace(/[\s.@:_]+/g, '-')
+
+/** Whether `id` stands in `m` as a whole word and a whole version (a date may follow). */
+const holds = (m: string, id: string): boolean => new RegExp(`(^|[^a-z0-9])${id}(?!-?\\d{1,2}(?!\\d))`).test(m)
+
+const FAMILIES = ['fable', 'mythos', 'opus', 'sonnet', 'haiku']
+
+/** The model as people name it, read from its id: `claude-opus-5-5` is Opus 5.5, `claude-3-5-haiku-2024...` Haiku 3.5. */
+export const modelName = (model: string | null | undefined): string | null => {
+  const m = normalize(model)
+  for (const f of FAMILIES) {
+    const after = new RegExp(`(?:^|[^a-z0-9])${f}-(\\d{1,2})(?:-(\\d{1,2}))?(?!\\d)`).exec(m)
+    if (after) return `${f[0]!.toUpperCase()}${f.slice(1)} ${after[1]}${after[2] ? `.${after[2]}` : ''}`
+    const before = new RegExp(`(?:^|[^a-z0-9])(\\d)(?:-(\\d))?-${f}(?:$|[^a-z])`).exec(m)
+    if (before) return `${f[0]!.toUpperCase()}${f.slice(1)} ${before[1]}${before[2] ? `.${before[2]}` : ''}`
+  }
+  return null
+}
 
 /** The price row for a model id, or null for one this table does not know. */
 export const priceOf = (model: string | null | undefined, promptTokens = 0): Price | null => {
-  const m = (model ?? '').toLowerCase().replace(/\[.*?\]/g, '').replace(/[\s.@]+/g, '-')
+  const m = normalize(model)
   if (!m) return null
-  if (m.includes('haiku-5-5') && promptTokens > LONG_PROMPT) return HAIKU_LONG
-  return PRICES.find(([id]) => m.includes(id))?.[1] ?? null
+  const row = PRICES.find(([id]) => holds(m, id))
+  if (!row) return null
+  const long = LONG.find(([id, over]) => id === row[0] && promptTokens > over)
+  return { name: modelName(m) ?? row[0], ...(long ? long[2] : row[1]) }
 }
 
 export const writeRate = (p: Price, ttl: Ttl): number => p.input * (ttl === '1h' ? 2 : 1.25)
@@ -69,16 +106,26 @@ export const coldUsd = (p: Price | null, ctx: number, ttl: Ttl): number | null =
 export const requestUsd = (p: Price | null, r: { read: number; write: number; uncached: number; output: number }, ttl: Ttl): number | null =>
   p ? (r.read * p.read + r.write * writeRate(p, ttl) + r.uncached * p.input + r.output * p.output) / 1e6 : null
 
+/** Dollars: whole above $100, cents above a cent, `<$0.01` below; `n/a` when the price is unknown. */
 export const usd = (n: number | null): string => {
-  if (n == null) return 'n/a'
-  if (n >= 100) return '$' + n.toFixed(0)
-  if (n >= 0.995 || n === 0) return '$' + n.toFixed(2)
-  if (n >= 0.01) return '$' + n.toFixed(2)
+  if (n == null || !Number.isFinite(n)) return 'n/a'
+  if (n <= 0) return '$0.00'
+  if (n >= 99.995) return '$' + Math.round(n).toLocaleString('en-US')
+  // Cents rounded half up on the decimal figure, not on its binary neighbour: $1.505 is $1.51.
+  if (n >= 0.005) return '$' + (Math.round(Number((n * 100).toFixed(6))) / 100).toFixed(2)
   return '<$0.01'
 }
 
-export const tok = (n: number): string =>
-  n >= 1e6 ? `${Number((n / 1e6).toFixed(n >= 1e7 ? 0 : 1))}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(Math.round(n))
+/** Tokens: 950, 12k, 1.2M, 15M. Rounds up into the next unit rather than printing 1000k. */
+export const tok = (n: number): string => {
+  const v = Math.max(0, Math.round(n))
+  if (v >= 999_500) {
+    const m = v / 1e6
+    return `${m >= 9.95 ? Math.round(m) : Number(m.toFixed(1))}M`
+  }
+  if (v >= 1000) return `${Math.round(v / 1000)}k`
+  return String(v)
+}
 
 /** A duration as 45s, 18m, 2h 05m, 3d 4h. */
 export const dur = (ms: number): string => {
@@ -91,7 +138,10 @@ export const dur = (ms: number): string => {
   return `${Math.floor(hours / 24)}d ${hours % 24}h`
 }
 
-export const pct = (part: number, whole: number): number => (whole > 0 ? Math.round((part / whole) * 100) : 0)
+export const pct = (part: number, whole: number): number => (whole > 0 ? Math.min(100, Math.max(0, Math.round((part / whole) * 100))) : 0)
+
+/** A share that never rounds up to a whole it has not reached: 99.6% of hits is 99%, not 100%. */
+export const pctDown = (part: number, whole: number): number => (whole > 0 ? Math.min(100, Math.max(0, Math.floor((part / whole) * 100))) : 0)
 
 export type CacheState = 'none' | 'warm' | 'soon' | 'cold'
 

@@ -44,6 +44,12 @@ export type KeepWarm = {
   missed: number
 }
 
+/**
+ * What the engine itself said about the cache: the TTL it caches with, and a
+ * model switched to since the last request (its cache starts cold).
+ */
+export type EngineCache = { ttl: '5m' | '1h' | null; switchedTo: string | null }
+
 declare module 'claude-code' {
   interface PluginState {
     'cache-meter': {
@@ -52,6 +58,7 @@ declare module 'claude-code' {
       stats: Shaped<Stats>
       sessionUsd: Shaped<number | null>
       warm: Shaped<KeepWarm>
+      engine: Shaped<EngineCache>
     }
   }
 }

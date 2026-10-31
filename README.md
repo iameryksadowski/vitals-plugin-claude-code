@@ -3,7 +3,7 @@
 A quiet meter above the Claude Code prompt for the prompt cache and your usage limits. One row in your theme's colors; the full breakdown one click away.
 
 ```
-● Cache Warm  42m left  │  Next $0.06  │  Context 301k  30%  │  Weekly 88%  2d 4h  │  If Cold $2.41  │  Hit Rate 97%    Details
+● Cache Warm 42m left  │  Next $0.06  │  If Cold $2.41  │  Context 301k 30%  │  Hit Rate 96%  │  Weekly 88% 2d 4h  │  Session $3.50    Details
 ```
 
 ## Install
@@ -25,7 +25,16 @@ Or at the prompt of a Claude Code session: `/plugin marketplace add iameryksadow
 - **Usage limits**: percent used and time to reset for each limit your plan has (Weekly, and 5-Hour where the plan reports one); warning at 80%, error at 95%.
 - **Hit rate and session cost**: share of input served from cache on the main thread, and the engine's session total.
 
-Parts drop out by priority as the window narrows. `Details` (or `/cache`) opens a side pane with the full breakdown: TTL bar, read and write rates, cold/warm ratio, tokens read, written and uncached, what caching saved, cold writes paid, the last request and every usage limit.
+Parts drop out strictly by priority as the window narrows: the cache state stays always, then your main usage limit, then the next message cost and the context. `Details` (or `/cache`) opens a side pane with the full breakdown: TTL bar, read and write rates, cold/warm ratio, tokens read, written and uncached, what caching saved, cold writes paid, the last request and every usage limit.
+
+## Honest by design
+
+- A model switch makes the cache cold at once (the engine says so), and the next message is priced on the new model.
+- A model the price table does not know shows no prices at all, never a guess from a neighbouring model.
+- The TTL is the one the engine reports when it reports one; the `ttl` setting wins when set by hand.
+- A usage limit past its reset time says "Just reset" until the next reply brings the new figure.
+- The hit rate rounds down, so it never shows 100% unless every token was read from cache.
+- Not visible to the meter: a side chat or another tool that reads the same cache. Then the real cache can be warmer than shown, never colder.
 
 ## Keep Warm
 

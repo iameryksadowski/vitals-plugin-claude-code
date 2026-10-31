@@ -1,5 +1,6 @@
 {
   "name": "estools",
+  "description": "ES Tools plugins for Claude Code by Eryk Sadowski.",
   "owner": {
     "name": "Eryk Sadowski",
     "url": "https://eryksadowski.com"

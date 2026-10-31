@@ -4,17 +4,18 @@ import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 import type { CacheFacts, Limit, Stats } from '../types'
 import {
   COLD_WRITE_MIN, COLD_WRITE_SHARE, GUARD_MIN_TOKENS, LIMIT_NAME, TONE, TTL_MS,
-  bar, dur, limitTone, pct, priceOf, requestUsd, resetIn, sortLimits, tok, usd, viewOf,
+  bar, dur, limitTone, pct, priceOf, requestUsd, resetIn, sortLimits, tok, usd, viewOf, writeRate,
 } from './cache'
 import type { CacheView, Ttl } from './cache'
 
 // A quiet meter above the prompt: whether the prompt cache is warm or cold,
 // how long it has left, how big the context is, what the next message costs
-// warm and cold, the session's cache hit rate and the 5h / 7d usage windows.
-// /cache opens a pane with the full breakdown. It never calls a model: every
-// figure is the engine's own or the API's usage, priced from a list table.
+// warm and cold, the session's cache hit rate and the usage limits the account
+// has. /cache opens a pane with the full breakdown. It never calls a model:
+// every figure is the engine's own or the API's usage, priced from a list table.
 
 const PANE = 'cache-meter'
+const TITLE = 'Prompt Cache'
 /** How often the band redraws, so the countdown and the warm-to-cold flip stay current. */
 const TICK_MS = 15_000
 
@@ -25,15 +26,24 @@ const limits = atom({ plugin: 'cache-meter', key: 'limits' } as const, [] as Lim
 const stats = atom({ plugin: 'cache-meter', key: 'stats' } as const, EMPTY_STATS, { shape: 'stats-1' })
 const sessionUsd = atom({ plugin: 'cache-meter', key: 'sessionUsd' } as const, null as number | null, { shape: 'usd-1' })
 
+/**
+ * The limits the account is actually held to. Plans differ (Ultra has the
+ * weekly limit alone), so nothing is assumed: a limit is shown only when the
+ * API reports it, and one reported with no reset time and nothing used is idle.
+ */
 const cleanLimits = (list: readonly Limit[]): Limit[] =>
-  sortLimits(list.map(w => ({ kind: w.kind, percentUsed: w.percentUsed, resetsAt: w.resetsAt })))
+  sortLimits(
+    list
+      .filter(w => w.resetsAt !== undefined || w.percentUsed > 0)
+      .map(w => ({ kind: w.kind, percentUsed: w.percentUsed, resetsAt: w.resetsAt })),
+  )
 
 /** One run of text in the band. */
 type Piece = { t: string; color?: string; dim?: boolean; bold?: boolean }
 /** One part of the band; the lower `prio`, the longer it stays as the band narrows. */
 type Segment = { key: string; prio: number; pieces: Piece[] }
 
-const SEP = ' · '
+const SEP = '  │  '
 const widthOf = (s: Segment): number => s.pieces.reduce((n, p) => n + p.t.length, 0)
 
 /** The parts that fit in `columns`, kept in their reading order. */
@@ -51,7 +61,7 @@ const fit = (segs: Segment[], columns: number, reserve: number): Segment[] => {
 
 type TtlOption = Ttl | 'auto'
 
-/** auto: a subscription reports usage windows and caches for an hour; an API key caches for 5 minutes. */
+/** auto: a subscription reports usage limits and caches for an hour; an API key caches for 5 minutes. */
 const resolveTtl = (option: TtlOption, ls: readonly Limit[]): Ttl => (option === 'auto' ? (ls.length > 0 ? '1h' : '5m') : option)
 
 /** Everything the band, the pane and the guard read, at one moment. */
@@ -63,7 +73,7 @@ async function snapshot($: EngineInterface, option: TtlOption) {
 }
 
 function openPane($: EngineInterface) {
-  return $.ui.open({ id: PANE, title: 'Prompt cache' })
+  return $.ui.open({ id: PANE, title: TITLE })
 }
 
 export const register: Register = (on, options) => {
@@ -79,7 +89,7 @@ export const register: Register = (on, options) => {
     const u = await $.session.usage()
     await update($, limits, () => cleanLimits(u.rateLimits))
     await update($, sessionUsd, () => u.cost?.usd ?? null)
-    await $.command.register({ name: 'cache', description: 'Prompt cache: state, context, warm and cold cost, hit rate, usage windows (cache-meter)' })
+    await $.command.register({ name: 'cache', description: 'Prompt Cache: state, context, warm and cold cost, hit rate and usage limits (Cache Meter)' })
     $.clock.every(TICK_MS, () => $.ui.invalidate('ui.render'))
     return r
   })
@@ -148,7 +158,7 @@ export const register: Register = (on, options) => {
       output: s.output + req.output,
       savedUsd: s.savedUsd + (price ? (req.read * (price.input - price.read)) / 1e6 : 0),
       coldWrites: s.coldWrites + (isColdWrite ? 1 : 0),
-      coldUsd: s.coldUsd + (isColdWrite && price ? (write * (price.input * (ttl === '1h' ? 2 : 1.25))) / 1e6 : 0),
+      coldUsd: s.coldUsd + (isColdWrite && price ? (write * writeRate(price, ttl)) / 1e6 : 0),
       last: { at: startedAt, ...req, model, usd: cost },
     }))
     // The next request re-sends this prompt and this answer.
@@ -178,20 +188,20 @@ export const register: Register = (on, options) => {
     if (!f || view.state !== 'cold' || view.ctx < GUARD_MIN_TOKENS) return next(e)
     const name = view.price?.name ?? view.model ?? 'this model'
     const text =
-      `prompt cache went cold ${dur(view.idleMs - TTL_MS[ttl])} ago. This message re-writes ~${tok(view.ctx)} tokens on ${name}: ` +
-      `${usd(view.cold)} (warm it would read them for ${usd(view.warm)}).`
+      `Cache Meter: The prompt cache went cold ${dur(view.idleMs - TTL_MS[ttl])} ago. ` +
+      `This message re-writes ~${tok(view.ctx)} tokens on ${name} for ${usd(view.cold)} (a warm read would be ${usd(view.warm)}).`
     if (guard === 'warn' || ackedAt === f.lastAt) {
-      if (guard === 'warn') $.ui.log(`cache-meter: ${text}`)
+      if (guard === 'warn') $.ui.log(text)
       ackedAt = 0
       return next(e)
     }
     ackedAt = f.lastAt
-    return { drop: `cache-meter: ${text} Send it again to go ahead, or /clear and start from a short summary.` }
+    return { drop: `${text} Send it again to go ahead, or /clear and start from a short summary.` }
   }).catch(($, e, next) => next(e)) // a meter that fails never blocks a message
 
   on('command.run', { command: 'cache' }, async $ => {
     const opened = await openPane($)
-    if (opened.isPlaced) return { text: 'Prompt cache details are open in the side pane.' }
+    if (opened.isPlaced) return { text: 'Prompt Cache details are open in the side pane.' }
     const { view, st, ls, ttl, now, total } = await snapshot($, ttlOption)
     return { text: summary(view, st, ls, ttl, now, total).join('\n') }
   })
@@ -200,13 +210,16 @@ export const register: Register = (on, options) => {
     const rest = await next(e)
     if (e.props.hasSurvey) return rest
     const { Box, Button, Text } = $.ui.resolve(e)
-    const { view, st, ls, total } = await snapshot($, ttlOption)
-    const now = await $.clock.now()
+    const { view, st, ls, total, now } = await snapshot($, ttlOption)
     const tone = TONE[view.state]
 
     const segs: Segment[] = []
     if (view.state === 'none') {
-      segs.push({ key: 'cache', prio: 0, pieces: [{ t: '○ cache', dim: true }, { t: ' waiting for the first reply', dim: true }] })
+      segs.push({
+        key: 'cache',
+        prio: 0,
+        pieces: [{ t: '○ ', dim: true }, { t: TITLE, bold: true }, { t: '  Waiting for the first reply', dim: true }],
+      })
     } else {
       const cold = view.state === 'cold'
       segs.push({
@@ -214,25 +227,27 @@ export const register: Register = (on, options) => {
         prio: 0,
         pieces: [
           { t: '● ', color: tone },
-          { t: 'cache ', dim: true },
-          { t: cold ? 'cold' : 'warm', color: tone, bold: true },
-          cold ? { t: ` ${dur(view.idleMs)} idle`, dim: true } : { t: ` ${dur(view.leftMs)} left`, color: view.state === 'soon' ? tone : undefined },
+          { t: 'Cache ', dim: true },
+          { t: cold ? 'Cold' : 'Warm', color: tone, bold: true },
+          cold
+            ? { t: `  Idle ${dur(view.idleMs)}`, dim: true }
+            : { t: `  ${dur(view.leftMs)} left`, color: view.state === 'soon' ? tone : undefined },
         ],
       })
       segs.push(
         cold
-          ? { key: 'next', prio: 1, pieces: [{ t: 'next ', dim: true }, { t: usd(view.cold), color: 'error', bold: true }, { t: ' re-cache', dim: true }] }
-          : { key: 'next', prio: 1, pieces: [{ t: 'next ', dim: true }, { t: usd(view.warm) }] },
+          ? { key: 'next', prio: 1, pieces: [{ t: 'Next ', dim: true }, { t: usd(view.cold), color: 'error', bold: true }, { t: '  Re-cache', dim: true }] }
+          : { key: 'next', prio: 1, pieces: [{ t: 'Next ', dim: true }, { t: usd(view.warm), bold: true }] },
       )
+      if (!cold) segs.push({ key: 'cold', prio: 4, pieces: [{ t: 'If Cold ', dim: true }, { t: usd(view.cold) }] })
       segs.push({
         key: 'ctx',
         prio: 2,
-        pieces: [{ t: 'ctx ', dim: true }, { t: tok(view.ctx) }, ...(view.window ? [{ t: ` ${pct(view.ctx, view.window)}%`, dim: true }] : [])],
+        pieces: [{ t: 'Context ', dim: true }, { t: tok(view.ctx) }, ...(view.window ? [{ t: `  ${pct(view.ctx, view.window)}%`, dim: true }] : [])],
       })
-      if (!cold) segs.push({ key: 'cold', prio: 4, pieces: [{ t: 'cold ', dim: true }, { t: usd(view.cold), dim: true }] })
     }
     const inputs = st.read + st.write + st.uncached
-    if (st.requests > 0) segs.push({ key: 'hit', prio: 5, pieces: [{ t: 'hit ', dim: true }, { t: `${pct(st.read, inputs)}%` }] })
+    if (st.requests > 0) segs.push({ key: 'hit', prio: 5, pieces: [{ t: 'Hit Rate ', dim: true }, { t: `${pct(st.read, inputs)}%` }] })
     ls.forEach((w, i) => {
       const used = Math.round(w.percentUsed)
       const reset = resetIn(w.resetsAt, now)
@@ -241,16 +256,16 @@ export const register: Register = (on, options) => {
         prio: i === 0 ? 2 : 3,
         pieces: [
           { t: `${LIMIT_NAME[w.kind] ?? w.kind} `, dim: true },
-          { t: `${used}%`, color: limitTone(used), bold: limitTone(used) !== undefined },
-          ...(reset ? [{ t: ` ${reset}`, dim: true }] : []),
+          { t: `${used}%`, color: limitTone(used), bold: true },
+          ...(reset ? [{ t: `  Resets in ${reset}`, dim: true }] : []),
         ],
       })
     })
-    if (total != null && total > 0) segs.push({ key: 'usd', prio: 6, pieces: [{ t: 'session ', dim: true }, { t: usd(total) }] })
+    if (total != null && total > 0) segs.push({ key: 'usd', prio: 6, pieces: [{ t: 'Session ', dim: true }, { t: usd(total) }] })
 
     const columns = e.props.bodyColumns ?? e.viewport?.columns ?? 100
-    const DETAILS = 'details'
-    const shown = fit(segs, columns - 2, DETAILS.length + SEP.length)
+    const DETAILS = 'Details'
+    const shown = fit(segs, columns - 2, DETAILS.length + 2)
 
     const row = (
       <Box key="cache-meter" flexDirection="row" paddingX={1}>
@@ -272,10 +287,11 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
     const { view, st, ls, ttl, now, total } = await snapshot($, ttlOption)
-    const columns = e.props.bodyColumns ?? 48
-    const cells = Math.max(10, Math.min(28, columns - 22))
+    const columns = Math.max(30, e.props.bodyColumns ?? 48)
+    const LABEL = 16
+    const cells = Math.max(10, Math.min(30, columns - LABEL - 2))
     const tone = TONE[view.state]
-    const LABEL = 14
+    const rule = '─'.repeat(Math.min(columns - 1, LABEL + cells + 12))
 
     const Row = (p: { k: string; label: string; children: RenderChildren }) => (
       <Box key={p.k} flexDirection="row">
@@ -283,8 +299,14 @@ export const register: Register = (on, options) => {
         <Box flexDirection="row" flexShrink={1}>{p.children}</Box>
       </Box>
     )
-    const Heading = (p: { k: string; t: string }) => (
-      <Box key={p.k} marginTop={1}><Text bold>{p.t}</Text></Box>
+    const Section = (p: { k: string; t: string; note?: string; first?: boolean }) => (
+      <Box key={p.k} flexDirection="column" marginTop={p.first ? 0 : 1}>
+        <Box flexDirection="row">
+          <Text bold>{p.t}</Text>
+          {p.note ? <Text dimColor>{`   ${p.note}`}</Text> : null}
+        </Box>
+        <Text dimColor>{rule}</Text>
+      </Box>
     )
     const Bar = (p: { share: number; color?: string }) => {
       const b = bar(p.share, cells)
@@ -295,75 +317,87 @@ export const register: Register = (on, options) => {
     const cold = view.state === 'cold'
     const rows: RenderChildren[] = []
 
-    rows.push(<Box key="h-cache"><Text bold>Prompt cache</Text><Text dimColor>{`  TTL ${ttl}`}</Text></Box>)
+    rows.push(<Section k="s-cache" t={TITLE} note={`TTL ${ttl}`} first />)
     if (view.state === 'none') {
-      rows.push(<Row k="state" label="state"><Text dimColor>no request yet</Text></Row>)
+      rows.push(<Row k="state" label="State"><Text dimColor>No request yet</Text></Row>)
     } else {
       rows.push(
-        <Row k="state" label="state">
-          <Text color={tone} bold>{cold ? 'cold' : 'warm'}</Text>
-          <Text dimColor>{cold ? `  ${dur(view.idleMs)} since the last request` : `  ${dur(view.leftMs)} left, idle ${dur(view.idleMs)}`}</Text>
+        <Row k="state" label="State">
+          <Text color={tone} bold>{cold ? 'Cold' : 'Warm'}</Text>
+          <Text dimColor>{cold ? `  ·  Idle ${dur(view.idleMs)}` : `  ·  ${dur(view.leftMs)} left  ·  Idle ${dur(view.idleMs)}`}</Text>
         </Row>,
       )
-      rows.push(<Row k="ttl" label="">{Bar({ share: cold ? 0 : view.leftMs / TTL_MS[ttl], color: tone })}</Row>)
-      rows.push(<Row k="model" label="model"><Text>{view.price?.name ?? view.model ?? 'unknown'}</Text>{view.price ? null : <Text dimColor>  not in the price table</Text>}</Row>)
+      rows.push(<Row k="ttl" label="Time Left">{Bar({ share: cold ? 0 : view.leftMs / TTL_MS[ttl], color: tone })}</Row>)
       rows.push(
-        <Row k="ctx" label="context">
+        <Row k="model" label="Model">
+          <Text>{view.price?.name ?? view.model ?? 'Unknown'}</Text>
+          {view.price ? null : <Text dimColor>  ·  Not in the price table</Text>}
+        </Row>,
+      )
+      rows.push(
+        <Row k="ctx" label="Context">
           <Text>{`${tok(view.ctx)} tokens`}</Text>
-          {view.window ? <Text dimColor>{`  ${pct(view.ctx, view.window)}% of ${tok(view.window)}`}</Text> : null}
+          {view.window ? <Text dimColor>{`  ·  ${pct(view.ctx, view.window)}% of ${tok(view.window)}`}</Text> : null}
         </Row>,
       )
       if (view.window) rows.push(<Row k="ctx-bar" label="">{Bar({ share: view.ctx / view.window })}</Row>)
 
-      rows.push(<Heading k="h-next" t="Next message re-sends the context" />)
+      rows.push(<Section k="s-next" t="Next Message" note="Re-sends the whole context" />)
       rows.push(
-        <Row k="warm" label="while warm">
+        <Row k="warm" label="While Warm">
           <Text bold={!cold} color={cold ? undefined : 'success'}>{usd(view.warm)}</Text>
-          <Text dimColor>{view.price ? `  read at $${view.price.read}/MTok` : ''}</Text>
+          {view.price ? <Text dimColor>{`  ·  Read at $${view.price.read}/MTok`}</Text> : null}
         </Row>,
       )
       rows.push(
-        <Row k="cold" label="once cold">
+        <Row k="cold" label="Once Cold">
           <Text bold={cold} color={cold ? 'error' : undefined}>{usd(view.cold)}</Text>
-          <Text dimColor>{view.price ? `  write at $${view.price.input * (ttl === '1h' ? 2 : 1.25)}/MTok` : ''}</Text>
+          {view.price ? <Text dimColor>{`  ·  Write at $${writeRate(view.price, ttl)}/MTok`}</Text> : null}
         </Row>,
       )
-      if (view.warm && view.cold) rows.push(<Row k="ratio" label="cold / warm"><Text>{`${Math.round(view.cold / view.warm)}x`}</Text></Row>)
+      if (view.warm && view.cold) {
+        rows.push(<Row k="ratio" label="Cold vs Warm"><Text>{`${Math.round(view.cold / view.warm)}x`}</Text><Text dimColor>  ·  More per message</Text></Row>)
+      }
     }
 
-    rows.push(<Heading k="h-session" t="This session (main thread)" />)
+    rows.push(<Section k="s-session" t="This Session" note="Main thread" />)
     if (st.requests === 0) {
-      rows.push(<Row k="none" label="requests"><Text dimColor>none yet</Text></Row>)
+      rows.push(<Row k="none" label="Requests"><Text dimColor>None yet</Text></Row>)
     } else {
-      rows.push(<Row k="req" label="requests"><Text>{String(st.requests)}</Text></Row>)
+      rows.push(<Row k="req" label="Requests"><Text>{String(st.requests)}</Text></Row>)
       rows.push(
-        <Row k="hit" label="cache hit">
+        <Row k="hit" label="Cache Hit">
           <Text bold>{`${pct(st.read, inputs)}%`}</Text>
-          <Text dimColor>{`  ${tok(st.read)} read · ${tok(st.write)} written · ${tok(st.uncached)} uncached`}</Text>
+          <Text dimColor>{`  ·  ${tok(st.read)} read  ·  ${tok(st.write)} written  ·  ${tok(st.uncached)} uncached`}</Text>
         </Row>,
       )
       rows.push(<Row k="hit-bar" label="">{Bar({ share: inputs ? st.read / inputs : 0, color: 'success' })}</Row>)
-      rows.push(<Row k="saved" label="cache saved"><Text color="success">{usd(st.savedUsd)}</Text><Text dimColor>  vs full input price</Text></Row>)
+      rows.push(<Row k="saved" label="Cache Saved"><Text color="success">{usd(st.savedUsd)}</Text><Text dimColor>  ·  Compared to full input price</Text></Row>)
       rows.push(
-        <Row k="cold-writes" label="cold writes">
+        <Row k="cold-writes" label="Cold Writes">
           <Text color={st.coldWrites ? 'warning' : undefined}>{String(st.coldWrites)}</Text>
-          {st.coldWrites ? <Text dimColor>{`  ${usd(st.coldUsd)} re-caching`}</Text> : null}
+          {st.coldWrites ? <Text dimColor>{`  ·  ${usd(st.coldUsd)} spent re-caching`}</Text> : null}
         </Row>,
       )
       if (st.last) {
         const l = st.last
         rows.push(
-          <Row k="last" label="last request">
+          <Row k="last" label="Last Request">
             <Text>{usd(l.usd)}</Text>
-            <Text dimColor>{`  ${dur(now - l.at)} ago · ${tok(l.read)} read · ${tok(l.write)} written · ${tok(l.uncached)} new · ${tok(l.output)} out`}</Text>
+            <Text dimColor>{`  ·  ${dur(now - l.at)} ago`}</Text>
+          </Row>,
+        )
+        rows.push(
+          <Row k="last-detail" label="">
+            <Text dimColor>{`${tok(l.read)} read  ·  ${tok(l.write)} written  ·  ${tok(l.uncached)} new  ·  ${tok(l.output)} out`}</Text>
           </Row>,
         )
       }
     }
-    if (total != null) rows.push(<Row k="total" label="session total"><Text>{usd(total)}</Text><Text dimColor>  all requests, subagents too</Text></Row>)
+    if (total != null) rows.push(<Row k="total" label="Session Total"><Text>{usd(total)}</Text><Text dimColor>  ·  All requests, subagents too</Text></Row>)
 
     if (ls.length > 0) {
-      rows.push(<Heading k="h-limits" t="Usage windows" />)
+      rows.push(<Section k="s-limits" t="Usage Limits" />)
       for (const w of ls) {
         const used = Math.round(w.percentUsed)
         const reset = resetIn(w.resetsAt, now)
@@ -371,17 +405,18 @@ export const register: Register = (on, options) => {
           <Row k={`l-${w.kind}`} label={LIMIT_NAME[w.kind] ?? w.kind}>
             {Bar({ share: used / 100, color: limitTone(used) })}
             <Text color={limitTone(used)} bold>{`  ${used}%`}</Text>
-            {reset ? <Text dimColor>{`  resets in ${reset}`}</Text> : null}
           </Row>,
         )
+        if (reset) rows.push(<Row k={`r-${w.kind}`} label=""><Text dimColor>{`Resets in ${reset}`}</Text></Row>)
       }
     }
 
     rows.push(
-      <Box key="foot" marginTop={1}>
+      <Box key="foot" flexDirection="column" marginTop={1}>
+        <Text dimColor>{rule}</Text>
         <Text dimColor>
           {ls.length > 0
-            ? 'Dollar figures are API list prices. On a subscription they are a yardstick for how much of your limits a message takes, not a bill.'
+            ? 'Dollar figures are API list prices. On a subscription they show how much of your limits a message takes, not a bill.'
             : 'Dollar figures are API list prices from the table in hooks/cache.ts.'}
         </Text>
       </Box>,
@@ -394,15 +429,16 @@ export const register: Register = (on, options) => {
 /** The pane's figures as plain lines, for a surface that cannot seat the pane. */
 const summary = (v: CacheView, st: Stats, ls: readonly Limit[], ttl: Ttl, now: number, total: number | null): string[] => {
   const out: string[] = []
-  if (v.state === 'none') out.push('cache        no request yet')
+  const line = (label: string, value: string) => out.push(`${label.padEnd(14)}${value}`)
+  if (v.state === 'none') line('Prompt Cache', 'No request yet')
   else {
-    out.push(`cache        ${v.state === 'cold' ? `cold, ${dur(v.idleMs)} idle` : `warm, ${dur(v.leftMs)} left`} (TTL ${ttl})`)
-    out.push(`context      ${tok(v.ctx)} tokens${v.window ? `, ${pct(v.ctx, v.window)}% of ${tok(v.window)}` : ''} on ${v.price?.name ?? v.model ?? 'unknown model'}`)
-    out.push(`next msg     ${usd(v.warm)} warm, ${usd(v.cold)} cold`)
+    line('Prompt Cache', `${v.state === 'cold' ? `Cold, idle ${dur(v.idleMs)}` : `Warm, ${dur(v.leftMs)} left`} (TTL ${ttl})`)
+    line('Context', `${tok(v.ctx)} tokens${v.window ? `, ${pct(v.ctx, v.window)}% of ${tok(v.window)}` : ''} on ${v.price?.name ?? v.model ?? 'an unknown model'}`)
+    line('Next Message', `${usd(v.warm)} warm, ${usd(v.cold)} cold`)
   }
   const inputs = st.read + st.write + st.uncached
-  if (st.requests) out.push(`cache hit    ${pct(st.read, inputs)}% over ${st.requests} requests, saved ${usd(st.savedUsd)}, ${st.coldWrites} cold writes (${usd(st.coldUsd)})`)
-  if (total != null) out.push(`session      ${usd(total)}`)
-  for (const w of ls) out.push(`${(LIMIT_NAME[w.kind] ?? w.kind).padEnd(13)}${Math.round(w.percentUsed)}% used${w.resetsAt ? `, resets in ${resetIn(w.resetsAt, now)}` : ''}`)
+  if (st.requests) line('Cache Hit', `${pct(st.read, inputs)}% over ${st.requests} requests, saved ${usd(st.savedUsd)}, ${st.coldWrites} cold writes (${usd(st.coldUsd)})`)
+  if (total != null) line('Session Total', usd(total))
+  for (const w of ls) line(LIMIT_NAME[w.kind] ?? w.kind, `${Math.round(w.percentUsed)}% used${w.resetsAt ? `, resets in ${resetIn(w.resetsAt, now)}` : ''}`)
   return out
 }

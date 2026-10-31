@@ -12,7 +12,7 @@ const PANE = {
   plugin: 'cache-meter',
   component: 'Pane',
   requestId: 'cache-meter',
-  props: { title: 'Prompt cache', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
+  props: { title: 'Prompt Cache', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
 } as const
 
 const HOUR = 60 * 60 * 1000
@@ -20,9 +20,9 @@ const FIVE_HOUR = { kind: 'five_hour', percentUsed: 42, resetsAt: '2026-10-31T05
 const SEVEN_DAY = { kind: 'seven_day', percentUsed: 88, resetsAt: '2026-11-03T00:00:00Z' }
 
 /** The engine beneath the plugin: usage, model, commands, panes, and one 300k-token Opus 5.5 request. */
-const engine = (on: On) => {
+const engine = (on: On, rateLimits: { kind: string; percentUsed: number; resetsAt?: string }[] = [FIVE_HOUR, SEVEN_DAY]) => {
   on('session.usage', () => ({
-    value: { startedAt: 0, context: { tokens: 300_000, window: 1_000_000, percent: 30 }, rateLimits: [FIVE_HOUR, SEVEN_DAY], cost: { usd: 3.5 } },
+    value: { startedAt: 0, context: { tokens: 300_000, window: 1_000_000, percent: 30 }, rateLimits, cost: { usd: 3.5 } },
   }))
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('command.register', () => ({ value: { command: 'cache' } }))
@@ -57,7 +57,7 @@ test('the band waits for the first reply, then shows a warm cache and the usage 
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...BAND, surface })
-    expect((await ui.find({ type: 'Text', text: /waiting for the first reply/ }))?.text).toContain('waiting')
+    expect((await ui.find({ type: 'Text', text: /Waiting for the first reply/ }))?.text).toContain('Waiting')
     await ui.unmount()
   }
 
@@ -65,14 +65,35 @@ test('the band waits for the first reply, then shows a warm cache and the usage 
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...BAND, surface })
-    expect(await ui.find({ type: 'Text', text: 'warm' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '1h00m left' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Warm' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '1h 00m left' })).toBeDefined()
     // 301k tokens read at $0.20/MTok.
     expect(await ui.find({ type: 'Text', text: '$0.06' })).toBeDefined()
     // ...and written at the 1h rate, $8/MTok, once cold.
     expect(await ui.find({ type: 'Text', text: '$2.41' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '88%' })).toBeDefined()
     await ui.unmount()
+  }
+})
+
+test('a plan held to the 7d window alone shows the weekly limit and no 5-hour one, and keeps the 1h TTL', async ($, on) => {
+  // Ultra: the API reports seven_day only; an idle five_hour (nothing used, no reset) is left out too.
+  engine(on, [{ kind: 'five_hour', percentUsed: 0 }, SEVEN_DAY])
+  mock.clock(on, { now: 1_000_000 })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await step($)
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const band = await $.ui.mount({ ...BAND, surface })
+    expect(await band.find({ type: 'Text', text: 'Weekly ' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: '5-Hour ' })).toBeUndefined()
+    expect(await band.find({ type: 'Text', text: '1h 00m left' })).toBeDefined()
+    await band.unmount()
+
+    const pane = await $.ui.mount({ ...PANE, surface })
+    expect(await pane.find({ type: 'Text', text: 'Weekly' })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: '5-Hour' })).toBeUndefined()
+    await pane.unmount()
   }
 })
 
@@ -85,8 +106,8 @@ test('after the TTL the band turns cold and the first send is held once with its
   await clock.advance(HOUR + 5 * 60 * 1000)
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: 'cold' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: '1h05m idle' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Cold' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Idle 1h 05m' })).toBeDefined()
   await ui.unmount()
 
   const first = await $.prompt.submit({ text: 'what next?', origin: { kind: 'composer' }, wait: false })
@@ -121,10 +142,10 @@ test('the pane breaks down the cache, the session and the windows on every surfa
 
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(await ui.find({ type: 'Text', text: 'Prompt cache' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Prompt Cache' })).toBeDefined()
     // 580k read of 600k input.
     expect(await ui.find({ type: 'Text', text: '97%' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /resets in/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Resets in/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'Opus 5.5' })).toBeDefined()
     await ui.unmount()
   }
@@ -138,6 +159,6 @@ test('a value an earlier version stored is declined', async ($, on) => {
     return <Box />
   })
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /waiting for the first reply/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Waiting for the first reply/ })).toBeDefined()
   await ui.unmount()
 })

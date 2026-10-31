@@ -1,9 +1,9 @@
 # ES Tools Cache Meter
 
-A quiet meter above the Claude Code prompt for the prompt cache and your usage windows. One row in your theme's colors; the full breakdown one click away.
+A quiet meter above the Claude Code prompt for the prompt cache and your usage limits. One row in your theme's colors; the full breakdown one click away.
 
 ```
-● cache warm 42m left · next $0.06 · ctx 301k 30% · 5h 42% 3h10m · 7d 88% 2d4h · cold $2.41 · hit 97% · session $3.50    details
+● Cache Warm  42m left  │  Next $0.06  │  Context 301k  30%  │  Weekly 88%  Resets in 2d 4h  │  If Cold $2.41  │  Hit Rate 97%    Details
 ```
 
 ## Install
@@ -27,10 +27,10 @@ In the desktop app: click + next to the prompt box, then Plugins, Add marketplac
 - **Cache state**: warm with time left, a warning color in the last 10 minutes (last minute on a 5m TTL), cold with idle time.
 - **Next message**: what re-sending the context costs while warm (cache read) and once cold (cache write).
 - **Context**: tokens the next request re-sends and the share of the model's window.
-- **Usage windows**: 5h and 7d percent used and time to reset; warning at 80%, error at 95%.
+- **Usage limits**: percent used and time to reset for each limit your plan has (Weekly, and 5-Hour where the plan reports one); warning at 80%, error at 95%.
 - **Hit rate and session cost**: share of input served from cache on the main thread, and the engine's session total.
 
-Parts drop out by priority as the window narrows. `details` (or `/cache`) opens a side pane with the full breakdown: TTL bar, read and write rates, cold/warm ratio, tokens read, written and uncached, what caching saved, cold writes paid, the last request and both usage windows.
+Parts drop out by priority as the window narrows. `Details` (or `/cache`) opens a side pane with the full breakdown: TTL bar, read and write rates, cold/warm ratio, tokens read, written and uncached, what caching saved, cold writes paid, the last request and every usage limit.
 
 ## Cold send guard
 

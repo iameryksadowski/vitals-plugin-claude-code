@@ -57,7 +57,7 @@ const engine = (on: On, rateLimits: { kind: string; percentUsed: number; resetsA
 }
 
 const step = async ($: Parameters<TestBody>[0]) => {
-  const run = $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', messageCount: 10 })
+  const run = $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', effort: 'xhigh', messageCount: 10 })
   for await (const _ of run) void _
 }
 
@@ -166,6 +166,7 @@ test('the pane breaks down the cache, the session and the windows on every surfa
     expect(await ui.find({ type: 'Text', text: '97%' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /Resets in/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'Opus 5.5' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Extra High' })).toBeDefined()
     await ui.unmount()
   }
 })

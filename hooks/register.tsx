@@ -4,7 +4,7 @@ import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 import type { CacheFacts, KeepWarm, Limit, Stats } from '../types'
 import {
   COLD_WRITE_MIN, COLD_WRITE_SHARE, GUARD_MIN_TOKENS, LIMIT_NAME, TONE, TTL_MS, WARM_FOR_MS, WARM_LEAD_MS,
-  dur, limitTone, pct, priceOf, requestUsd, resetIn, sortLimits, tok, usd, viewOf, warmUsd, writeRate,
+  dur, effortLabel, limitTone, pct, priceOf, requestUsd, resetIn, sortLimits, tok, usd, viewOf, warmUsd, writeRate,
 } from './cache'
 import type { CacheView, Ttl } from './cache'
 
@@ -24,7 +24,7 @@ const PING = 'Cache keep-alive ping from the Cache Meter plugin. Reply with the 
 const EMPTY_STATS: Stats = { requests: 0, read: 0, write: 0, uncached: 0, output: 0, savedUsd: 0, coldWrites: 0, coldUsd: 0, last: null }
 const EMPTY_WARM: KeepWarm = { on: null, since: 0, streak: 0, pings: 0, usd: 0, lastPingAt: 0, missed: 0 }
 
-const facts = atom({ plugin: 'cache-meter', key: 'facts' } as const, null as CacheFacts | null, { shape: 'facts-1' })
+const facts = atom({ plugin: 'cache-meter', key: 'facts' } as const, null as CacheFacts | null, { shape: 'facts-2' })
 const limits = atom({ plugin: 'cache-meter', key: 'limits' } as const, [] as Limit[], { shape: 'limits-1' })
 const stats = atom({ plugin: 'cache-meter', key: 'stats' } as const, EMPTY_STATS, { shape: 'stats-1' })
 const sessionUsd = atom({ plugin: 'cache-meter', key: 'sessionUsd' } as const, null as number | null, { shape: 'usd-1' })
@@ -204,7 +204,7 @@ export const register: Register = (on, options) => {
       const lastAt = now - e.seconds_since_last_response * 1000
       const ctx = typeof e.context_tokens === 'number' ? e.context_tokens : (u.context.tokens ?? 0)
       const model = typeof e.model === 'string' ? e.model : await $.session.model()
-      await update($, facts, () => ({ lastAt, ctx, window: u.context.window, model }))
+      await update($, facts, f => ({ lastAt, ctx, window: u.context.window, model, effort: f?.effort ?? null }))
       await update($, warm, w => ({ ...w, since: lastAt, streak: 0 }))
     }
     return r
@@ -245,7 +245,7 @@ export const register: Register = (on, options) => {
       last: { at: startedAt, ...req, model, usd: cost },
     }))
     // The next request re-sends this prompt and this answer.
-    await update($, facts, f => ({ lastAt: startedAt, ctx: prompt + u.output_tokens, window: f?.window ?? 0, model }))
+    await update($, facts, f => ({ lastAt: startedAt, ctx: prompt + u.output_tokens, window: f?.window ?? 0, model, effort: e.effort ?? null }))
     await update($, warm, w => ({ ...w, since: startedAt, streak: 0 }))
     return r
   })
@@ -430,6 +430,8 @@ export const register: Register = (on, options) => {
             <Row k="model" label="Model">
               <Text>
                 <Text>{view.price?.name ?? view.model ?? 'Unknown'}</Text>
+                {effortLabel(view.effort) ? <Text dimColor>{`${dot}Effort `}</Text> : null}
+                {effortLabel(view.effort) ? <Text bold>{effortLabel(view.effort)}</Text> : null}
                 {view.price ? null : <Text dimColor>{`${dot}Not in the price table`}</Text>}
               </Text>
             </Row>,
@@ -606,7 +608,7 @@ const summary = (
   if (v.state === 'none') line('Prompt Cache', 'No request yet')
   else {
     line('Prompt Cache', `${v.state === 'cold' ? `Cold, idle ${dur(v.idleMs)}` : `Warm, ${dur(v.leftMs)} left`} (TTL ${ttl})`)
-    line('Context', `${tok(v.ctx)} tokens${v.window ? `, ${pct(v.ctx, v.window)}% of ${tok(v.window)}` : ''} on ${v.price?.name ?? v.model ?? 'an unknown model'}`)
+    line('Context', `${tok(v.ctx)} tokens${v.window ? `, ${pct(v.ctx, v.window)}% of ${tok(v.window)}` : ''} on ${v.price?.name ?? v.model ?? 'an unknown model'}${effortLabel(v.effort) ? `, effort ${effortLabel(v.effort)}` : ''}`)
     line('Next Message', `${usd(v.warm)} warm, ${usd(v.cold)} cold`)
   }
   line('Keep Warm', `${warmOn ? 'On' : 'Off'}, ${w.pings} pings (${usd(w.usd)}). /cache warm switches it.`)

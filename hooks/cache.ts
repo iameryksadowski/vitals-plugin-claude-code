@@ -104,6 +104,7 @@ export type CacheView = {
   ctx: number
   window: number
   model: string | null
+  effort: string | number | null
   price: Price | null
   warm: number | null
   cold: number | null
@@ -111,19 +112,25 @@ export type CacheView = {
 
 /** Everything the band and the pane draw about the cache, at `now`. */
 export const viewOf = (
-  f: { lastAt: number; ctx: number; window: number; model: string | null } | null,
+  f: { lastAt: number; ctx: number; window: number; model: string | null; effort: string | number | null } | null,
   now: number,
   ttl: Ttl,
 ): CacheView => {
   const ctx = f?.ctx ?? 0
   const price = priceOf(f?.model, ctx)
-  const base = { ctx, window: f?.window ?? 0, model: f?.model ?? null, price, warm: warmUsd(price, ctx), cold: coldUsd(price, ctx, ttl) }
+  const base = { ctx, window: f?.window ?? 0, model: f?.model ?? null, effort: f?.effort ?? null, price, warm: warmUsd(price, ctx), cold: coldUsd(price, ctx, ttl) }
   if (!f || f.lastAt <= 0 || ctx <= 0) return { state: 'none', idleMs: 0, leftMs: 0, ...base }
   const idleMs = Math.max(0, now - f.lastAt)
   const leftMs = Math.max(0, TTL_MS[ttl] - idleMs)
   const state: CacheState = leftMs === 0 ? 'cold' : leftMs <= SOON_MS[ttl] ? 'soon' : 'warm'
   return { state, idleMs, leftMs, ...base }
 }
+
+const EFFORT_NAME: Record<string, string> = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra High', max: 'Max' }
+
+/** An effort as people read it: a level by name, a token budget as one. */
+export const effortLabel = (effort: string | number | null): string | null =>
+  effort == null ? null : typeof effort === 'number' ? `${tok(effort)} budget` : (EFFORT_NAME[effort] ?? effort)
 
 /** The theme key each state is drawn in, so the meter follows the person's theme. */
 export const TONE: Record<CacheState, string | undefined> = { none: undefined, warm: 'success', soon: 'warning', cold: 'error' }

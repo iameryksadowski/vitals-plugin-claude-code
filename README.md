@@ -33,6 +33,7 @@ Parts drop out strictly by priority as the window narrows: the cache state stays
 - A model the price table does not know shows no prices at all, never a guess from a neighbouring model.
 - The TTL is the one the engine reports when it reports one; the `ttl` setting wins when set by hand.
 - A usage limit past its reset time says "Just reset" until the next reply brings the new figure.
+- After a restart the last known limits stay until the API reports new ones, so a subscription keeps its 1h TTL and its prices.
 - The hit rate rounds down, so it never shows 100% unless every token was read from cache.
 - Not visible to the meter: a side chat or another tool that reads the same cache. Then the real cache can be warmer than shown, never colder.
 
@@ -45,6 +46,8 @@ Shortly before the cache would expire (5 minutes on a 1h TTL, 45 seconds on 5m),
 ## Cold send guard
 
 When the cache has gone cold and the context is over 50k tokens, the first message you send is held once with its re-cache price. Send it again to go ahead, or `/clear` and start from a summary. Slash commands and prompts nobody typed (task notifications, scheduled prompts, other sessions) are never held.
+
+Switch it off or on per session with the button in the pane or `/cache guard` (`/cache guard off`, `/cache guard on`), or for every new session with the `guard` setting. Switched on over a `warn` setting it keeps only warning; over `off` it holds.
 
 ## Settings
 

@@ -59,6 +59,8 @@ declare module 'claude-code' {
       sessionUsd: Shaped<number | null>
       warm: Shaped<KeepWarm>
       engine: Shaped<EngineCache>
+      /** The cold send guard switched for this session; null follows the setting. */
+      guard: Shaped<boolean | null>
     }
   }
 }

@@ -493,7 +493,7 @@ test('the first message into a cold cache is held once with its price; the resen
   await clock.advance(HOUR + 5 * MIN)
   const first = await send($, 'what next?')
   expect(first.drop).toBe(
-    'Cache Meter: The prompt cache went cold 5m ago. This message re-writes ~301k tokens on Opus 5.5 for $2.41 (a warm read would be $0.06). Send it again to go ahead, or /clear and start from a short summary.',
+    'Cache Meter: The prompt cache went cold 5m ago. This message re-writes ~301k tokens on Opus 5.5 for $2.41 (a warm read would be $0.06). Send it again to go ahead, or /clear and start from a short summary. /cache guard off stops these holds.',
   )
   expect((await send($, 'what next?')).drop).toBeUndefined()
 })
@@ -532,6 +532,84 @@ test('guard off never holds', { options: { guard: 'off' } }, async ($, on) => {
   await step($)
   await clock.advance(2 * HOUR)
   expect((await send($, 'hi')).drop).toBeUndefined()
+})
+
+test('the guard switches off and on from the pane and with /cache guard, for this session', async ($, on) => {
+  engine(on)
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await clock.advance(2 * HOUR)
+  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: 'Cold Send Guard' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Holds the message once/ })).toBeDefined()
+  await ui.press({ key: 'guard-toggle' })
+  await ui.unmount()
+  expect((await send($, 'straight through')).drop).toBeUndefined()
+  const after = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  expect(await after.find({ type: 'Text', text: /Every message goes straight through/ })).toBeDefined()
+  await after.unmount()
+
+  expect(await cache($, 'guard on')).toBe('The cold send guard is on for this session.')
+  expect((await send($, 'held again')).drop).toContain('went cold')
+  expect(await cache($, 'guard off')).toBe('The cold send guard is off for this session.')
+  expect((await send($, 'and through')).drop).toBeUndefined()
+  expect(await cache($, 'guard')).toBe('The cold send guard is on for this session.')
+  expect(await cache($, 'GUARD   Off')).toBe('The cold send guard is off for this session.')
+})
+
+test('switched on over an off setting the guard holds; over warn it keeps warning', { options: { guard: 'off' } }, async ($, on) => {
+  engine(on)
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await clock.advance(2 * HOUR)
+  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Every message goes straight through/ })).toBeDefined()
+  await ui.unmount()
+  expect(await cache($, 'guard')).toBe('The cold send guard is on for this session.')
+  expect((await send($, 'hi')).drop).toContain('went cold')
+})
+
+test('a warn setting switched off and on again still only warns', { options: { guard: 'warn' } }, async ($, on) => {
+  const { seen } = engine(on)
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await clock.advance(2 * HOUR)
+  await cache($, 'guard off')
+  expect((await send($, 'quiet')).drop).toBeUndefined()
+  expect(seen.logs.length).toBe(0)
+  await cache($, 'guard on')
+  expect((await send($, 'loud')).drop).toBeUndefined()
+  expect(seen.logs.join('\n')).toContain('went cold')
+})
+
+test('/cache prints the guard where no pane can be seated', async ($, on) => {
+  engine(on, { placed: false })
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  expect(await cache($)).toContain('Cold Guard    On, holds the message once. /cache guard switches it.')
+  await cache($, 'guard off')
+  expect(await cache($)).toContain('Cold Guard    Off. /cache guard switches it.')
+})
+
+test('a restart before the first reply keeps the known limits and the 1h TTL, so the guard prices it right', async ($, on) => {
+  const { state } = engine(on, { limits: [WEEKLY] })
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  // The app restarts: the API has no limits to report until the next reply.
+  state.limits = []
+  await clock.advance(2 * HOUR)
+  await start($)
+  const { line } = await bandLine($)
+  expect(line).toContain('Weekly 88% 2d 2h')
+  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: 'TTL 1h' })).toBeDefined()
+  await ui.unmount()
+  expect((await send($, 'back after days')).drop).toContain('for $2.41')
 })
 
 // ── Keep Warm ───────────────────────────────────────────────────────────────

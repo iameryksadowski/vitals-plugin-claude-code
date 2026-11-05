@@ -33,6 +33,8 @@ const stats = atom({ plugin: 'cache-meter', key: 'stats' } as const, EMPTY_STATS
 const sessionUsd = atom({ plugin: 'cache-meter', key: 'sessionUsd' } as const, null as number | null, { shape: 'usd-1' })
 const warm = atom({ plugin: 'cache-meter', key: 'warm' } as const, EMPTY_WARM, { shape: 'warm-1' })
 const engine = atom({ plugin: 'cache-meter', key: 'engine' } as const, EMPTY_ENGINE, { shape: 'engine-1' })
+/** The cold send guard switched for this session; null follows the setting. */
+const holds = atom({ plugin: 'cache-meter', key: 'guard' } as const, null as boolean | null, { shape: 'guard-1' })
 
 /**
  * The limits the account is actually held to. Plans differ (Ultra has the
@@ -47,8 +49,9 @@ const cleanLimits = (list: readonly Limit[]): Limit[] =>
   )
 
 type TtlOption = Ttl | 'auto'
+type GuardMode = 'confirm' | 'warn' | 'off'
 /** What register reads from the settings, handed to the top-level helpers. */
-type Settings = { ttl: TtlOption; warmDefault: boolean; warmForMs: number }
+type Settings = { ttl: TtlOption; guard: GuardMode; warmDefault: boolean; warmForMs: number }
 /** Keep Warm's one ping in flight, so ticks never overlap one. */
 type PingRun = { busy: boolean }
 
@@ -61,6 +64,10 @@ const resolveTtl = (option: TtlOption, ls: readonly Limit[], said: Ttl | null): 
   option !== 'auto' ? option : (said ?? (ls.length > 0 ? '1h' : '5m'))
 
 const isWarmOn = (w: KeepWarm, cfg: Settings): boolean => w.on ?? cfg.warmDefault
+
+/** The guard as it runs now: switched on it keeps the setting's way of warning, or holds when the setting is off. */
+const guardModeOf = (on: boolean | null, cfg: Settings): GuardMode =>
+  on === null ? cfg.guard : on ? (cfg.guard === 'off' ? 'confirm' : cfg.guard) : 'off'
 
 /** The model as people name it, never a raw id where a name can be read. */
 const nameOf = (v: CacheView): string => v.price?.name ?? modelName(v.model) ?? v.model ?? 'Unknown model'
@@ -83,6 +90,7 @@ async function snapshot($: EngineInterface, cfg: Settings) {
     st: await read($, stats),
     total: await read($, sessionUsd),
     warmOn: isWarmOn(w, cfg),
+    guardMode: guardModeOf(await read($, holds), cfg),
   }
 }
 
@@ -98,6 +106,17 @@ async function setKeepWarm($: EngineInterface, cfg: Settings, to?: boolean): Pro
     isOn = to ?? !isWarmOn(w, cfg)
     // Switching on counts the window from now, so it never pings for a message long gone.
     return { ...w, on: isOn, since: isOn ? Math.max(w.since, now) : w.since, streak: isOn ? 0 : w.streak }
+  })
+  $.ui.invalidate('ui.render')
+  return isOn
+}
+
+/** Switches the cold send guard for this session; `to` left out flips it. */
+async function setGuard($: EngineInterface, cfg: Settings, to?: boolean): Promise<boolean> {
+  let isOn = false
+  await update($, holds, h => {
+    isOn = to ?? guardModeOf(h, cfg) === 'off'
+    return isOn
   })
   $.ui.invalidate('ui.render')
   return isOn
@@ -148,10 +167,10 @@ async function keepWarmTick($: EngineInterface, cfg: Settings, run: PingRun): Pr
 export const register: Register = (on, options) => {
   const cfg: Settings = {
     ttl: options.ttl === '1h' || options.ttl === '5m' ? options.ttl : 'auto',
+    guard: options.guard === 'warn' || options.guard === 'off' ? options.guard : 'confirm',
     warmDefault: options.keepWarm === 'on',
     warmForMs: WARM_FOR_MS[String(options.keepWarmFor)] ?? WARM_FOR_MS['2h']!,
   }
-  const guard = options.guard === 'warn' || options.guard === 'off' ? options.guard : 'confirm'
   const run: PingRun = { busy: false }
   /** The cold send the person was already told about: its resend goes through. */
   let ackedAt = 0
@@ -159,12 +178,15 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
     const u = await $.session.usage()
-    await update($, limits, () => cleanLimits(u.rateLimits))
+    // Before the first reply of a restart the API has reported no limits yet: the last known ones stay
+    // (a passed reset reads as such), so a subscription is never mistaken for an API key and its 1h TTL kept.
+    const fresh = cleanLimits(u.rateLimits)
+    if (fresh.length > 0) await update($, limits, () => fresh)
     await update($, sessionUsd, () => u.cost?.usd ?? null)
     await $.command.register({
       name: 'cache',
-      description: 'Prompt Cache: state, context, warm and cold cost, hit rate, usage limits and Keep Warm (Cache Meter)',
-      argumentHint: '[warm [on|off]]',
+      description: 'Prompt Cache: state, context, warm and cold cost, hit rate, usage limits, Keep Warm and the cold send guard (Cache Meter)',
+      argumentHint: '[warm|guard [on|off]]',
     })
     $.clock.every(TICK_MS, () => {
       $.ui.invalidate('ui.render')
@@ -276,6 +298,7 @@ export const register: Register = (on, options) => {
 
   // A message sent into a cold cache re-writes the whole context. Held once, with the price; the resend goes through.
   on('prompt.submit', async ($, e, next) => {
+    const guard = guardModeOf(await read($, holds), cfg)
     if (guard === 'off') return next(e)
     const kind = e.origin?.kind
     if (kind && kind !== 'composer' && kind !== 'bridge') return next(e)
@@ -294,7 +317,7 @@ export const register: Register = (on, options) => {
       return next(e)
     }
     ackedAt = f.lastAt
-    return { drop: `${text} Send it again to go ahead, or /clear and start from a short summary.` }
+    return { drop: `${text} Send it again to go ahead, or /clear and start from a short summary. /cache guard off stops these holds.` }
   }).catch(($, e, next) => next(e)) // a meter that fails never blocks a message
 
   on('command.run', { command: 'cache' }, async ($, e) => {
@@ -303,10 +326,14 @@ export const register: Register = (on, options) => {
       const isOn = await setKeepWarm($, cfg, arg === 'on' ? true : arg === 'off' ? false : undefined)
       return { text: `Keep Warm is ${isOn ? 'on' : 'off'} for this session.` }
     }
+    if (sub === 'guard') {
+      const isOn = await setGuard($, cfg, arg === 'on' ? true : arg === 'off' ? false : undefined)
+      return { text: `The cold send guard is ${isOn ? 'on' : 'off'} for this session.` }
+    }
     const opened = await openPane($)
     if (opened.isPlaced) return { text: 'Prompt Cache details are open in the side pane.' }
     const s = await snapshot($, cfg)
-    return { text: summary(s.view, s.st, s.ls, s.ttl, s.now, s.total, s.warmOn, s.w, s.switched).join('\n') }
+    return { text: summary(s.view, s.st, s.ls, s.ttl, s.now, s.total, s.warmOn, s.w, s.switched, s.guardMode).join('\n') }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -402,7 +429,7 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
-    const { view, st, ls, ttl, now, total, w, warmOn, switched } = await snapshot($, cfg)
+    const { view, st, ls, ttl, now, total, w, warmOn, switched, guardMode } = await snapshot($, cfg)
     const LABEL = 14
     const tone = TONE[view.state]
     const inputs = st.read + st.write + st.uncached
@@ -553,6 +580,36 @@ export const register: Register = (on, options) => {
       </Card>,
     )
 
+    const guardOn = guardMode !== 'off'
+    cards.push(
+      <Card
+        k="guard"
+        title="Cold Send Guard"
+        note={
+          <Button
+            key="guard-toggle"
+            label={guardOn ? 'Turn Off' : 'Turn On'}
+            variant={guardOn ? 'secondary' : 'primary'}
+            onPress={() => void setGuard($, cfg)}
+          />
+        }
+      >
+        <Row k="guard-state" label="Status">
+          <Text>
+            <Text bold color={guardOn ? 'success' : undefined}>{guardOn ? 'On' : 'Off'}</Text>
+            <Text dimColor>
+              {`${dot}${guardMode === 'confirm' ? 'Holds the message once' : guardMode === 'warn' ? 'Only shows the price' : 'Every message goes straight through'}`}
+            </Text>
+          </Text>
+        </Row>
+        <Box marginTop={1}>
+          <Text dimColor size="footnote">
+            {`When the cache has gone cold and the context is over ${tok(GUARD_MIN_TOKENS)} tokens, the first message you send is held once with its re-cache price. Send it again to go ahead.`}
+          </Text>
+        </Box>
+      </Card>,
+    )
+
     cards.push(
       <Card k="session" title="This Session" note={<Text dimColor>Main thread</Text>}>
         {st.requests === 0 ? (
@@ -640,6 +697,7 @@ export const register: Register = (on, options) => {
 /** The pane's figures as plain lines, for a surface that cannot seat the pane. */
 const summary = (
   v: CacheView, st: Stats, ls: readonly Limit[], ttl: Ttl, now: number, total: number | null, warmOn: boolean, w: KeepWarm, switched: string | null,
+  guardMode: GuardMode,
 ): string[] => {
   const out: string[] = []
   const line = (label: string, value: string) => out.push(`${label.padEnd(14)}${value}`)
@@ -653,6 +711,7 @@ const summary = (
     if (v.price) line('Next Message', `${usd(v.warm)} warm, ${usd(v.cold)} cold`)
   }
   line('Keep Warm', `${warmOn ? 'On' : 'Off'}, ${w.pings} pings (${usd(w.usd)}). /cache warm switches it.`)
+  line('Cold Guard', `${guardMode === 'off' ? 'Off' : guardMode === 'warn' ? 'On, only shows the price' : 'On, holds the message once'}. /cache guard switches it.`)
   const inputs = st.read + st.write + st.uncached
   if (st.requests && inputs) {
     line('Cache Hit', `${pctDown(st.read, inputs)}% over ${st.requests} requests, saved ${usd(st.savedUsd)}, ${st.coldWrites} cold writes (${usd(st.coldUsd)})`)

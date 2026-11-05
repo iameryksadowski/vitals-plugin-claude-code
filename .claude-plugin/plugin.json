@@ -1,6 +1,6 @@
 {
   "name": "cache-meter",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A quiet meter above the prompt: prompt cache warm or cold, time left, context size, what the next message costs warm and cold, cache hit rate and your usage limits. /cache opens the full breakdown, with an optional Keep Warm.",
   "icon": "./.claude-plugin/icon.png",
   "author": {
@@ -35,7 +35,7 @@
     "guard": {
       "type": "string",
       "title": "Cold send guard",
-      "description": "confirm: hold a message sent into a cold cache once and show the price, the resend goes through. warn: only show the price. off: nothing.",
+      "description": "confirm: hold a message sent into a cold cache once and show the price, the resend goes through. warn: only show the price. off: nothing. Switch it per session with the button in the pane or /cache guard.",
       "default": "confirm",
       "options": [
         "confirm",

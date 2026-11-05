@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-11-05
+
+### Added
+
+- The cold send guard switches off and on per session: a Cold Send Guard card with a button in the pane, `/cache guard [on|off]`, and a hint in the held message. `/cache` prints its state where no pane can be seated.
+
+### Fixed
+
+- After a restart, before the first reply, the limits were cleared, so a subscription was taken for an API key: the TTL read 5m and the guard priced a cold send at the 5-minute write rate ($1.82 instead of $2.91 for 364k on Opus 5.5). The last known limits now stay until the API reports new ones.
+
 ## [0.2.0] - 2026-10-31
 
 ### Changed

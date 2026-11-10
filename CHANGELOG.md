@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-11-10
+
+### Changed
+
+- No more ES Tools: the plugin is Cache Meter, signed Eryk Sadowski. The repository is now `cachemeter-plugin-claude-code` and the marketplace `cachemeter`, so install it as `cache-meter@cachemeter` (the old `estools` marketplace is gone; remove it and add the new one).
+
 ## [0.3.0] - 2026-11-05
 
 ### Added

@@ -1,6 +1,6 @@
 {
-  "name": "estools",
-  "description": "ES Tools plugins for Claude Code by Eryk Sadowski.",
+  "name": "cachemeter",
+  "description": "Cache Meter for Claude Code by Eryk Sadowski.",
   "owner": {
     "name": "Eryk Sadowski",
     "url": "https://eryksadowski.com"
@@ -9,7 +9,7 @@
     {
       "name": "cache-meter",
       "source": "./",
-      "description": "ES Tools Cache Meter: prompt cache and usage windows above the Claude Code prompt."
+      "description": "Cache Meter: prompt cache and usage windows above the Claude Code prompt."
     }
   ]
 }

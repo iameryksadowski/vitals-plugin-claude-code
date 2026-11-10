@@ -1,6 +1,6 @@
 {
   "name": "cachemeter",
-  "description": "Cache Meter for Claude Code by Eryk Sadowski.",
+  "description": "Cache Meter for Claude Code, by Eryk Sadowski.",
   "owner": {
     "name": "Eryk Sadowski",
     "url": "https://eryksadowski.com"
@@ -8,8 +8,20 @@
   "plugins": [
     {
       "name": "cache-meter",
+      "displayName": "Cache Meter",
       "source": "./",
-      "description": "Cache Meter: prompt cache and usage windows above the Claude Code prompt."
+      "description": "Prompt cache and usage limits right above the Claude Code prompt. By Eryk Sadowski.",
+      "author": {
+        "name": "Eryk Sadowski",
+        "url": "https://eryksadowski.com"
+      },
+      "category": "productivity",
+      "tags": [
+        "prompt-cache",
+        "usage",
+        "cost",
+        "status"
+      ]
     }
   ]
 }

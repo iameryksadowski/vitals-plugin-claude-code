@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.3.2] - 2026-11-10
+
+### Changed
+
+- The plugin shows as "Cache Meter" in the plugin list (`displayName`), with "By Eryk Sadowski" in its description and the author on the marketplace entry. A shorter, clearer description; category and tags for search. The plugin id stays `cache-meter@cachemeter`.
+
+### Removed
+
+- The plugin icon and its source: Claude Code does not show a plugin icon, and the plugin carries no brand marks. The plugin list shows the default icon.
+
 ## [0.3.1] - 2026-11-10
 
 ### Changed

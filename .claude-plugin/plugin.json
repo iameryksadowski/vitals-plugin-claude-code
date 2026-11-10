@@ -1,14 +1,14 @@
 {
   "name": "cache-meter",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "A quiet meter above the prompt: prompt cache warm or cold, time left, context size, what the next message costs warm and cold, cache hit rate and your usage limits. /cache opens the full breakdown, with an optional Keep Warm.",
   "icon": "./.claude-plugin/icon.png",
   "author": {
     "name": "Eryk Sadowski",
     "url": "https://eryksadowski.com"
   },
-  "homepage": "https://github.com/iameryksadowski/estools-plugin-claude-code-cache-meter",
-  "repository": "https://github.com/iameryksadowski/estools-plugin-claude-code-cache-meter",
+  "homepage": "https://github.com/iameryksadowski/cachemeter-plugin-claude-code",
+  "repository": "https://github.com/iameryksadowski/cachemeter-plugin-claude-code",
   "license": "MIT",
   "keywords": [
     "prompt-cache",

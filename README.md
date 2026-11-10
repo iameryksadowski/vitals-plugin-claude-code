@@ -1,4 +1,4 @@
-# ES Tools Cache Meter
+# Cache Meter
 
 A quiet meter above the Claude Code prompt for the prompt cache and your usage limits. One row in your theme's colors; the full breakdown one click away.
 
@@ -11,11 +11,11 @@ A quiet meter above the Claude Code prompt for the prompt cache and your usage l
 Private repo: your GitHub account needs access to it. From a shell:
 
 ```
-claude plugin marketplace add iameryksadowski/estools-plugin-claude-code-cache-meter
-claude plugin install cache-meter@estools --scope user
+claude plugin marketplace add iameryksadowski/cachemeter-plugin-claude-code
+claude plugin install cache-meter@cachemeter --scope user
 ```
 
-Or at the prompt of a Claude Code session: `/plugin marketplace add iameryksadowski/estools-plugin-claude-code-cache-meter`, then `/plugin install cache-meter@estools`. Update later with `claude plugin marketplace update estools`.
+Or at the prompt of a Claude Code session: `/plugin marketplace add iameryksadowski/cachemeter-plugin-claude-code`, then `/plugin install cache-meter@cachemeter`. Update later with `claude plugin marketplace update cachemeter`.
 
 ## What it shows
 
@@ -83,4 +83,4 @@ Private. [MIT](LICENSE) text kept for a possible public release.
 
 ---
 
-ES Tools by Eryk Sadowski · eryksadowski.com
+Eryk Sadowski · eryksadowski.com

@@ -39,7 +39,7 @@ Parts drop out strictly by priority as the window narrows: the cache state stays
 
 ## Keep Warm
 
-Off by default. Switch it on per session with the button in the pane or `/cache warm` (`/cache warm on`, `/cache warm off`), or for every new session with the `keepWarm` setting.
+Off by default. Switch it on for every repo, for one repo or for one session (see [On, off and where](#on-off-and-where)).
 
 Shortly before the cache would expire (5 minutes on a 1h TTL, 45 seconds on 5m), it forks one tool-less question over the session's own transcript on the same model and system prompt. The API serves that prefix from the cache, the read starts the TTL over, and nothing is added to the conversation. Each ping costs one cache read of the context (about $0.03 for 150k tokens on Opus 5.5) instead of a full re-write later (about $1.20). It stops `keepWarmFor` after your last message, and switches itself off if a ping ever finds the cache already gone.
 
@@ -47,17 +47,29 @@ Shortly before the cache would expire (5 minutes on a 1h TTL, 45 seconds on 5m),
 
 When the cache has gone cold and the context is over 50k tokens, the first message you send is held once with its re-cache price. Send it again to go ahead, or `/clear` and start from a summary. Slash commands and prompts nobody typed (task notifications, scheduled prompts, other sessions) are never held.
 
-Switch it off or on per session with the button in the pane or `/cache guard` (`/cache guard off`, `/cache guard on`), or for every new session with the `guard` setting. Switched on over a `warn` setting it keeps only warning; over `off` it holds.
+Off by default. Switch it on for every repo, for one repo or for one session (see below). Switched on over a `warn` setting it keeps only warning; over `off` it holds.
+
+## On, off and where
+
+Keep Warm and the cold send guard are each set at three levels. The closer one wins: this session, then this repo, then the plugin settings.
+
+| Level | How | Lasts |
+| --- | --- | --- |
+| Every repo | `/plugin configure cache-meter@cachemeter` (or `/config`): `guard`, `keepWarm` | Until you change it |
+| This repo | `/cache guard repo on`, `off` or `reset`; `/cache warm repo on`, `off` or `reset`; or "Keep On Here" / "Follow Settings" in the pane | Every new session in this repo and its worktrees |
+| This session | `/cache guard on` or `off`, `/cache warm on` or `off`, or the Turn On / Turn Off button in the pane | Until the session ends |
+
+The pane shows for each which level set it. Claude Code reads plugin settings from your user settings only (a repo's `.claude/settings.json` cannot set them), so the plugin keeps each repo's choice in its own store under your Claude Code configuration, keyed by the repo's folder.
 
 ## Settings
 
-All are pickers in `/config` (or `pluginConfigs` in settings):
+All are pickers in `/plugin configure cache-meter@cachemeter` and `/config` (stored as `pluginConfigs` in your user settings). They are the default for every repo:
 
 | Field | Values | Default |
 | --- | --- | --- |
 | `ttl` | `auto`, `1h`, `5m` | `auto`: 1h on a subscription, 5m on an API key |
-| `guard` | `confirm`, `warn`, `off` | `confirm` |
-| `keepWarm` | `off`, `on` | `off`: switch it on per session |
+| `guard` | `off`, `confirm`, `warn` | `off` |
+| `keepWarm` | `off`, `on` | `off` |
 | `keepWarmFor` | `1h`, `2h`, `4h`, `8h` | `2h` after your last message |
 
 ## Good to know

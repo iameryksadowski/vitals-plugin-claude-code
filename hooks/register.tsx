@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { CacheFacts, EngineCache, KeepWarm, Limit, Stats } from '../types'
+import type { CacheFacts, EngineCache, KeepWarm, Limit, RepoPrefs, Stats } from '../types'
 import { SEP, fit, spaced } from './band'
 import type { Segment } from './band'
 import {
@@ -35,6 +35,14 @@ const warm = atom({ plugin: 'cache-meter', key: 'warm' } as const, EMPTY_WARM, {
 const engine = atom({ plugin: 'cache-meter', key: 'engine' } as const, EMPTY_ENGINE, { shape: 'engine-1' })
 /** The cold send guard switched for this session; null follows the setting. */
 const holds = atom({ plugin: 'cache-meter', key: 'guard' } as const, null as boolean | null, { shape: 'guard-1' })
+const EMPTY_REPO: RepoPrefs = { root: null, guard: null, warm: null }
+const repo = atom({ plugin: 'cache-meter', key: 'repo' } as const, EMPTY_REPO, { shape: 'repo-1' })
+
+/** Plugin settings are read from the user's settings alone, so a repo's own choice is kept in the plugin's store. */
+const repoKey = (root: string) => `repo:${root}`
+/** A worktree under `.claude/worktrees` keeps the choices of the repo it belongs to. */
+const repoRoot = (dir: string) => dir.replace(/\/\.claude\/worktrees\/[^/]+\/?$/, '')
+const flag = (v: unknown): boolean | null => (typeof v === 'boolean' ? v : null)
 
 /**
  * The limits the account is actually held to. Plans differ (Ultra has the
@@ -63,7 +71,13 @@ type PingRun = { busy: boolean }
 const resolveTtl = (option: TtlOption, ls: readonly Limit[], said: Ttl | null): Ttl =>
   option !== 'auto' ? option : (said ?? (ls.length > 0 ? '1h' : '5m'))
 
-const isWarmOn = (w: KeepWarm, cfg: Settings): boolean => w.on ?? cfg.warmDefault
+/** Where a switch is set: this session over this repo over the plugin settings. */
+type Level = 'session' | 'repo' | 'settings'
+const levelOf = (session: boolean | null, inRepo: boolean | null): Level =>
+  session !== null ? 'session' : inRepo !== null ? 'repo' : 'settings'
+const LEVEL_NAME: Record<Level, string> = { session: 'This session', repo: 'This repo', settings: 'Plugin settings, every repo' }
+
+const isWarmOn = (w: KeepWarm, r: RepoPrefs, cfg: Settings): boolean => w.on ?? r.warm ?? cfg.warmDefault
 
 /** The guard as it runs now: switched on it keeps the setting's way of warning, or holds when the setting is off. */
 const guardModeOf = (on: boolean | null, cfg: Settings): GuardMode =>
@@ -79,6 +93,8 @@ async function snapshot($: EngineInterface, cfg: Settings) {
   const ttl = resolveTtl(cfg.ttl, ls, eng.ttl)
   const now = await $.clock.now()
   const w = await read($, warm)
+  const r = await read($, repo)
+  const h = await read($, holds)
   const f = await read($, facts)
   // A model switched to since the last request has no cache of this context:
   // the next message writes all of it, on the new model's price.
@@ -89,8 +105,11 @@ async function snapshot($: EngineInterface, cfg: Settings) {
     ls, ttl, now, w, view, switched,
     st: await read($, stats),
     total: await read($, sessionUsd),
-    warmOn: isWarmOn(w, cfg),
-    guardMode: guardModeOf(await read($, holds), cfg),
+    r,
+    warmOn: isWarmOn(w, r, cfg),
+    warmFrom: levelOf(w.on, r.warm),
+    guardMode: guardModeOf(h ?? r.guard, cfg),
+    guardFrom: levelOf(h, r.guard),
   }
 }
 
@@ -101,9 +120,10 @@ function openPane($: EngineInterface) {
 /** Switches Keep Warm for this session; `to` left out flips it. */
 async function setKeepWarm($: EngineInterface, cfg: Settings, to?: boolean): Promise<boolean> {
   const now = await $.clock.now()
+  const r = await read($, repo)
   let isOn = false
   await update($, warm, w => {
-    isOn = to ?? !isWarmOn(w, cfg)
+    isOn = to ?? !isWarmOn(w, r, cfg)
     // Switching on counts the window from now, so it never pings for a message long gone.
     return { ...w, on: isOn, since: isOn ? Math.max(w.since, now) : w.since, streak: isOn ? 0 : w.streak }
   })
@@ -113,13 +133,34 @@ async function setKeepWarm($: EngineInterface, cfg: Settings, to?: boolean): Pro
 
 /** Switches the cold send guard for this session; `to` left out flips it. */
 async function setGuard($: EngineInterface, cfg: Settings, to?: boolean): Promise<boolean> {
+  const r = await read($, repo)
   let isOn = false
   await update($, holds, h => {
-    isOn = to ?? guardModeOf(h, cfg) === 'off'
+    isOn = to ?? guardModeOf(h ?? r.guard, cfg) === 'off'
     return isOn
   })
   $.ui.invalidate('ui.render')
   return isOn
+}
+
+/**
+ * Keeps a switch for every session in this repo (`to` true or false), or
+ * hands it back to the plugin settings (null). It takes over in this session
+ * too. Resolves the repo's folder, or null when the session has none.
+ */
+async function setRepo($: EngineInterface, field: 'guard' | 'warm', to: boolean | null): Promise<string | null> {
+  const r = await read($, repo)
+  if (!r.root) return null
+  const now = await $.clock.now()
+  const next: RepoPrefs = { ...r, [field]: to }
+  await update($, repo, () => next)
+  const kept = { ...(next.guard !== null ? { guard: next.guard } : {}), ...(next.warm !== null ? { warm: next.warm } : {}) }
+  if (Object.keys(kept).length > 0) await $.store.set(repoKey(r.root), kept)
+  else await $.store.delete(repoKey(r.root))
+  if (field === 'guard') await update($, holds, () => null)
+  else await update($, warm, w => ({ ...w, on: null, since: to ? Math.max(w.since, now) : w.since, streak: to ? 0 : w.streak }))
+  $.ui.invalidate('ui.render')
+  return r.root
 }
 
 /**
@@ -167,7 +208,8 @@ async function keepWarmTick($: EngineInterface, cfg: Settings, run: PingRun): Pr
 export const register: Register = (on, options) => {
   const cfg: Settings = {
     ttl: options.ttl === '1h' || options.ttl === '5m' ? options.ttl : 'auto',
-    guard: options.guard === 'warn' || options.guard === 'off' ? options.guard : 'confirm',
+    // Both off unless switched on: in the settings for every project, a project's own settings, or per session.
+    guard: options.guard === 'confirm' || options.guard === 'warn' ? options.guard : 'off',
     warmDefault: options.keepWarm === 'on',
     warmForMs: WARM_FOR_MS[String(options.keepWarmFor)] ?? WARM_FOR_MS['2h']!,
   }
@@ -183,10 +225,13 @@ export const register: Register = (on, options) => {
     const fresh = cleanLimits(u.rateLimits)
     if (fresh.length > 0) await update($, limits, () => fresh)
     await update($, sessionUsd, () => u.cost?.usd ?? null)
+    const root = repoRoot(await $.session.root())
+    const kept = (await $.store.get(repoKey(root))) as { guard?: unknown; warm?: unknown } | undefined
+    await update($, repo, () => ({ root, guard: flag(kept?.guard), warm: flag(kept?.warm) }))
     await $.command.register({
       name: 'cache',
       description: 'Prompt Cache: state, context, warm and cold cost, hit rate, usage limits, Keep Warm and the cold send guard (Cache Meter)',
-      argumentHint: '[warm|guard [on|off]]',
+      argumentHint: '[warm|guard] [on|off] | [warm|guard] repo [on|off|reset]',
     })
     $.clock.every(TICK_MS, () => {
       $.ui.invalidate('ui.render')
@@ -298,7 +343,7 @@ export const register: Register = (on, options) => {
 
   // A message sent into a cold cache re-writes the whole context. Held once, with the price; the resend goes through.
   on('prompt.submit', async ($, e, next) => {
-    const guard = guardModeOf(await read($, holds), cfg)
+    const guard = guardModeOf((await read($, holds)) ?? (await read($, repo)).guard, cfg)
     if (guard === 'off') return next(e)
     const kind = e.origin?.kind
     if (kind && kind !== 'composer' && kind !== 'bridge') return next(e)
@@ -321,7 +366,23 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e)) // a meter that fails never blocks a message
 
   on('command.run', { command: 'cache' }, async ($, e) => {
-    const [sub, arg] = (e.args ?? '').trim().toLowerCase().split(/\s+/)
+    const [sub, arg, arg2] = (e.args ?? '').trim().toLowerCase().split(/\s+/)
+    if ((sub === 'warm' || sub === 'guard') && arg === 'repo') {
+      const name = sub === 'warm' ? 'Keep Warm' : 'The cold send guard'
+      const to = arg2 === 'on' ? true : arg2 === 'off' ? false : arg2 === 'reset' ? null : undefined
+      if (to === undefined) {
+        const s = await snapshot($, cfg)
+        const isOn = sub === 'warm' ? s.warmOn : s.guardMode !== 'off'
+        const kept = sub === 'warm' ? s.r.warm : s.r.guard
+        return { text: `${name} is ${isOn ? 'on' : 'off'} here. This repo ${kept === null ? 'follows the plugin settings' : `keeps it ${kept ? 'on' : 'off'}`}. /cache ${sub} repo on, off or reset changes that.` }
+      }
+      const root = await setRepo($, sub, to)
+      if (!root) return { text: 'This session has no repo folder to keep it for.' }
+      if (to !== null) return { text: `${name} is ${to ? 'on' : 'off'} in every session in ${root}.` }
+      const s = await snapshot($, cfg)
+      const isOn = sub === 'warm' ? s.warmOn : s.guardMode !== 'off'
+      return { text: `${root} follows the plugin settings again: ${name} is ${isOn ? 'on' : 'off'}.` }
+    }
     if (sub === 'warm') {
       const isOn = await setKeepWarm($, cfg, arg === 'on' ? true : arg === 'off' ? false : undefined)
       return { text: `Keep Warm is ${isOn ? 'on' : 'off'} for this session.` }
@@ -333,7 +394,7 @@ export const register: Register = (on, options) => {
     const opened = await openPane($)
     if (opened.isPlaced) return { text: 'Prompt Cache details are open in the side pane.' }
     const s = await snapshot($, cfg)
-    return { text: summary(s.view, s.st, s.ls, s.ttl, s.now, s.total, s.warmOn, s.w, s.switched, s.guardMode).join('\n') }
+    return { text: summary(s.view, s.st, s.ls, s.ttl, s.now, s.total, s.warmOn, s.w, s.switched, s.guardMode, s.warmFrom, s.guardFrom).join('\n') }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -429,7 +490,7 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
-    const { view, st, ls, ttl, now, total, w, warmOn, switched, guardMode } = await snapshot($, cfg)
+    const { view, st, ls, ttl, now, total, w, warmOn, switched, guardMode, r, warmFrom, guardFrom } = await snapshot($, cfg)
     const LABEL = 14
     const tone = TONE[view.state]
     const inputs = st.read + st.write + st.uncached
@@ -463,6 +524,21 @@ export const register: Register = (on, options) => {
         </Box>
       )
     }
+
+    /** What this repo keeps for every session in it, with one button to keep the current state or hand it back. */
+    const RepoRow = (p: { k: string; field: 'guard' | 'warm'; kept: boolean | null; isOn: boolean }) => (
+      <Row k={p.k} label="This Repo">
+        <Box flexDirection="row" columnGap={1} alignItems="center">
+          <Text dimColor>{p.kept === null ? 'Follows settings' : p.kept ? 'Always on' : 'Always off'}</Text>
+          <Button
+            key={`${p.field}-repo`}
+            label={p.kept === null ? `Keep ${p.isOn ? 'On' : 'Off'} Here` : 'Follow Settings'}
+            variant="secondary"
+            onPress={() => void setRepo($, p.field, p.kept === null ? p.isOn : null)}
+          />
+        </Box>
+      </Row>
+    )
 
     const cards: RenderChildren[] = []
     const effort = effortLabel(view.effort)
@@ -554,6 +630,8 @@ export const register: Register = (on, options) => {
             <Text dimColor>{`${dot}Up to ${forHours}h after your last message`}</Text>
           </Text>
         </Row>
+        <Row k="kw-from" label="Set By"><Text dimColor>{LEVEL_NAME[warmFrom]}</Text></Row>
+        {r.root ? <RepoRow k="kw-repo" field="warm" kept={r.warm} isOn={warmOn} /> : null}
         {warmOn ? (
           <Row k="kw-next" label="Next Ping">
             <Text dimColor>
@@ -602,6 +680,8 @@ export const register: Register = (on, options) => {
             </Text>
           </Text>
         </Row>
+        <Row k="guard-from" label="Set By"><Text dimColor>{LEVEL_NAME[guardFrom]}</Text></Row>
+        {r.root ? <RepoRow k="guard-repo" field="guard" kept={r.guard} isOn={guardOn} /> : null}
         <Box marginTop={1}>
           <Text dimColor size="footnote">
             {`When the cache has gone cold and the context is over ${tok(GUARD_MIN_TOKENS)} tokens, the first message you send is held once with its re-cache price. Send it again to go ahead.`}
@@ -697,7 +777,7 @@ export const register: Register = (on, options) => {
 /** The pane's figures as plain lines, for a surface that cannot seat the pane. */
 const summary = (
   v: CacheView, st: Stats, ls: readonly Limit[], ttl: Ttl, now: number, total: number | null, warmOn: boolean, w: KeepWarm, switched: string | null,
-  guardMode: GuardMode,
+  guardMode: GuardMode, warmFrom: Level, guardFrom: Level,
 ): string[] => {
   const out: string[] = []
   const line = (label: string, value: string) => out.push(`${label.padEnd(14)}${value}`)
@@ -710,8 +790,8 @@ const summary = (
     line('Model', `${nameOf(v)}${effort ? `, effort ${effort}` : ''}${v.price ? '' : ', not in the price table'}`)
     if (v.price) line('Next Message', `${usd(v.warm)} warm, ${usd(v.cold)} cold`)
   }
-  line('Keep Warm', `${warmOn ? 'On' : 'Off'}, ${w.pings} pings (${usd(w.usd)}). /cache warm switches it.`)
-  line('Cold Guard', `${guardMode === 'off' ? 'Off' : guardMode === 'warn' ? 'On, only shows the price' : 'On, holds the message once'}. /cache guard switches it.`)
+  line('Keep Warm', `${warmOn ? 'On' : 'Off'} (${LEVEL_NAME[warmFrom]}), ${w.pings} pings (${usd(w.usd)}). /cache warm switches it.`)
+  line('Cold Guard', `${guardMode === 'off' ? 'Off' : guardMode === 'warn' ? 'On, only shows the price' : 'On, holds the message once'} (${LEVEL_NAME[guardFrom]}). /cache guard switches it.`)
   const inputs = st.read + st.write + st.uncached
   if (st.requests && inputs) {
     line('Cache Hit', `${pctDown(st.read, inputs)}% over ${st.requests} requests, saved ${usd(st.savedUsd)}, ${st.coldWrites} cold writes (${usd(st.coldUsd)})`)

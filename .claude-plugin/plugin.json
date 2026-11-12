@@ -1,7 +1,7 @@
 {
   "name": "cache-meter",
   "displayName": "Cache Meter",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Prompt cache and usage limits right above the Claude Code prompt: cache warm or cold with time left, what the next message costs warm and cold, context size, hit rate and your usage limits. /cache opens the full breakdown, with an optional Keep Warm. By Eryk Sadowski.",
   "author": {
     "name": "Eryk Sadowski",
@@ -35,18 +35,18 @@
     "guard": {
       "type": "string",
       "title": "Cold send guard",
-      "description": "confirm: hold a message sent into a cold cache once and show the price, the resend goes through. warn: only show the price. off: nothing. Switch it per session with the button in the pane or /cache guard.",
-      "default": "confirm",
+      "description": "Default for every repo. off: nothing. confirm: hold a message sent into a cold cache once and show the price, the resend goes through. warn: only show the price. A repo can keep its own (/cache guard repo on|off), a session too (/cache guard, or the pane).",
+      "default": "off",
       "options": [
+        "off",
         "confirm",
-        "warn",
-        "off"
+        "warn"
       ]
     },
     "keepWarm": {
       "type": "string",
       "title": "Keep Warm at start",
-      "description": "on: every new session starts with Keep Warm on. off: switch it on per session from the pane or with /cache warm.",
+      "description": "Default for every repo. off: no pings. on: every new session starts with Keep Warm on. A repo can keep its own (/cache warm repo on|off), a session too (/cache warm, or the pane).",
       "default": "off",
       "options": [
         "off",

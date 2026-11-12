@@ -50,6 +50,13 @@ export type KeepWarm = {
  */
 export type EngineCache = { ttl: '5m' | '1h' | null; switchedTo: string | null }
 
+/**
+ * What this repo keeps switched for every session in it, over the plugin
+ * settings; null follows the settings. `root` is the repo's folder, a
+ * worktree read as the repo it belongs to; null until the session knows it.
+ */
+export type RepoPrefs = { root: string | null; guard: boolean | null; warm: boolean | null }
+
 declare module 'claude-code' {
   interface PluginState {
     'cache-meter': {
@@ -61,6 +68,7 @@ declare module 'claude-code' {
       engine: Shaped<EngineCache>
       /** The cold send guard switched for this session; null follows the setting. */
       guard: Shaped<boolean | null>
+      repo: Shaped<RepoPrefs>
     }
   }
 }

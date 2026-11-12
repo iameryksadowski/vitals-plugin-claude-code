@@ -13,7 +13,7 @@ const MIN = 60 * 1000
 const HOUR = 60 * MIN
 
 const bandProps = (bodyColumns = 200, hasSurvey = false) =>
-  ({ hasSurvey, isWorking: false, maxRows: 4, bodyColumns, scroll: { offset: 0, bodyRows: 4 }, view: {} }) as const
+  ({ hasSurvey, isCollapsed: false, isWorking: false, maxRows: 4, bodyColumns, scroll: { offset: 0, bodyRows: 4 }, view: {} }) as const
 const band = (bodyColumns?: number, hasSurvey?: boolean) =>
   ({ plugin: 'cache-meter', component: 'AbovePrompt', props: bandProps(bodyColumns, hasSurvey) }) as const
 const pane = (bodyColumns = 60) =>
@@ -41,12 +41,26 @@ type World = {
   fork?: Fork
   placed?: boolean
   engineRow?: boolean
+  root?: string
+  store?: Record<string, unknown>
 }
 
 /** The engine beneath the plugin, with counters a test reads back. */
 const engine = (on: On, w: World = {}) => {
   const seen = { forks: 0, logs: [] as string[], toasts: [] as string[] }
-  const state = { usage: w.usage ?? OPUS, limits: w.limits ?? [FIVE_HOUR, WEEKLY], fork: w.fork ?? FORK_HIT }
+  const store = new Map<string, unknown>(Object.entries(w.store ?? {}))
+  on('store.get', (_, e) => ({ value: store.get((e as { key: string }).key) }))
+  on('store.set', (_, e) => {
+    const { key, value } = e as { key: string; value: unknown }
+    store.set(key, JSON.parse(JSON.stringify(value)))
+    return { value: undefined }
+  })
+  on('store.delete', (_, e) => {
+    store.delete((e as { key: string }).key)
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: [...store.keys()] }))
+  const state = { usage: w.usage ?? OPUS, limits: w.limits ?? [FIVE_HOUR, WEEKLY], fork: w.fork ?? FORK_HIT, root: w.root ?? '/work/app' }
   on('session.usage', () => ({
     value: {
       startedAt: 0,
@@ -56,6 +70,7 @@ const engine = (on: On, w: World = {}) => {
     },
   }))
   on('session.model', () => ({ value: state.usage.model }))
+  on('session.root', () => ({ value: state.root }))
   on('command.register', () => ({ value: { command: 'cache' } }))
   on('ui.open', () => ({ value: w.placed === false ? { isPlaced: false as const, reason: 'no room for a pane' } : { isPlaced: true as const } }))
   on('ui.log', (_, e) => {
@@ -81,7 +96,7 @@ const engine = (on: On, w: World = {}) => {
   on('prompt.submit', (_, e) => ({ text: e.text }))
   on('classic.SessionStart', () => ({}))
   on('classic.PostModelSwitch', () => ({}))
-  return { seen, state }
+  return { seen, state, store }
 }
 
 const start = async ($: $T) => $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
@@ -258,7 +273,7 @@ test('a cold cache shows the idle time and the re-cache price, and no warm figur
   expect(line).not.toContain('left')
 })
 
-test('a model switch makes the cache cold at once, priced on the new model, until its first reply', async ($, on) => {
+test('a model switch makes the cache cold at once, priced on the new model, until its first reply', { options: { guard: 'confirm' } }, async ($, on) => {
   const { state } = engine(on)
   mock.clock(on, { now: NOW })
   await start($)
@@ -290,7 +305,7 @@ test('a switch to the same model changes nothing', async ($, on) => {
   expect((await bandLine($)).line).toContain('Cache Warm')
 })
 
-test('a model the price table does not know shows no prices, never n/a, and is named from its id', async ($, on) => {
+test('a model the price table does not know shows no prices, never n/a, and is named from its id', { options: { guard: 'confirm' } }, async ($, on) => {
   engine(on, { usage: { ...OPUS, model: 'claude-opus-5-1' } })
   const clock = mock.clock(on, { now: NOW })
   await start($)
@@ -485,7 +500,7 @@ test('/cache with a pane says where it went', async ($, on) => {
 
 // ── The cold send guard ─────────────────────────────────────────────────────
 
-test('the first message into a cold cache is held once with its price; the resend goes', async ($, on) => {
+test('the first message into a cold cache is held once with its price; the resend goes', { options: { guard: 'confirm' } }, async ($, on) => {
   engine(on)
   const clock = mock.clock(on, { now: NOW })
   await start($)
@@ -498,7 +513,7 @@ test('the first message into a cold cache is held once with its price; the resen
   expect((await send($, 'what next?')).drop).toBeUndefined()
 })
 
-test('the guard lets through warm sends, small contexts, commands and prompts nobody typed', async ($, on) => {
+test('the guard lets through warm sends, small contexts, commands and prompts nobody typed', { options: { guard: 'confirm' } }, async ($, on) => {
   const { state } = engine(on)
   const clock = mock.clock(on, { now: NOW })
   await start($)
@@ -534,7 +549,7 @@ test('guard off never holds', { options: { guard: 'off' } }, async ($, on) => {
   expect((await send($, 'hi')).drop).toBeUndefined()
 })
 
-test('the guard switches off and on from the pane and with /cache guard, for this session', async ($, on) => {
+test('the guard switches off and on from the pane and with /cache guard, for this session', { options: { guard: 'confirm' } }, async ($, on) => {
   engine(on)
   const clock = mock.clock(on, { now: NOW })
   await start($)
@@ -590,12 +605,35 @@ test('/cache prints the guard where no pane can be seated', async ($, on) => {
   mock.clock(on, { now: NOW })
   await start($)
   await step($)
-  expect(await cache($)).toContain('Cold Guard    On, holds the message once. /cache guard switches it.')
-  await cache($, 'guard off')
-  expect(await cache($)).toContain('Cold Guard    Off. /cache guard switches it.')
+  expect(await cache($)).toContain('Cold Guard    Off (Plugin settings, every repo). /cache guard switches it.')
+  await cache($, 'guard on')
+  expect(await cache($)).toContain('Cold Guard    On, holds the message once (This session). /cache guard switches it.')
 })
 
-test('a restart before the first reply keeps the known limits and the 1h TTL, so the guard prices it right', async ($, on) => {
+test('out of the box the guard and Keep Warm are both off: a cold send goes straight through and nothing pings', async ($, on) => {
+  const { seen } = engine(on)
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Every message goes straight through/ })).toBeDefined()
+  expect((await ui.findAll({ type: 'Text', text: 'Plugin settings, every repo' })).length).toBe(2)
+  await ui.unmount()
+  await clock.advance(2 * HOUR)
+  expect(seen.forks).toBe(0)
+  expect((await send($, 'cold but free to go')).drop).toBeUndefined()
+})
+
+test('an unknown guard value falls back to off, never to holding messages', { options: { guard: 'sometimes' } }, async ($, on) => {
+  engine(on)
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await clock.advance(2 * HOUR)
+  expect((await send($, 'hi')).drop).toBeUndefined()
+})
+
+test('a restart before the first reply keeps the known limits and the 1h TTL, so the guard prices it right', { options: { guard: 'confirm' } }, async ($, on) => {
   const { state } = engine(on, { limits: [WEEKLY] })
   const clock = mock.clock(on, { now: NOW })
   await start($)
@@ -610,6 +648,84 @@ test('a restart before the first reply keeps the known limits and the 1h TTL, so
   expect(await ui.find({ type: 'Text', text: 'TTL 1h' })).toBeDefined()
   await ui.unmount()
   expect((await send($, 'back after days')).drop).toContain('for $2.41')
+})
+
+// ── Per repo ────────────────────────────────────────────────────────────────
+
+for (const [root, held] of [['/work/app', true], ['/work/app/.claude/worktrees/fix-x', true], ['/work/other', false]] as const) {
+  test(`a repo that keeps the guard on holds in its sessions and worktrees, no other repo: ${root}`, async ($, on) => {
+    engine(on, { root, store: { 'repo:/work/app': { guard: true } } })
+    const clock = mock.clock(on, { now: NOW })
+    await start($)
+    await step($)
+    await clock.advance(2 * HOUR)
+    expect((await send($, 'hi')).drop !== undefined).toBe(held)
+  })
+}
+
+test('/cache guard repo on keeps it for the repo and takes over this session; reset hands it back to the settings', async ($, on) => {
+  const { store } = engine(on)
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await clock.advance(2 * HOUR)
+  expect(await cache($, 'guard repo')).toBe('The cold send guard is off here. This repo follows the plugin settings. /cache guard repo on, off or reset changes that.')
+  await cache($, 'guard on')
+  expect(await cache($, 'guard repo off')).toBe('The cold send guard is off in every session in /work/app.')
+  expect((await send($, 'repo says off')).drop).toBeUndefined()
+  expect(store.get('repo:/work/app')).toEqual({ guard: false })
+  expect(await cache($, 'guard repo on')).toBe('The cold send guard is on in every session in /work/app.')
+  expect((await send($, 'repo says on')).drop).toContain('went cold')
+  expect(await cache($, 'guard repo reset')).toBe('/work/app follows the plugin settings again: The cold send guard is off.')
+  expect(store.get('repo:/work/app')).toBeUndefined()
+  expect((await send($, 'settings say off')).drop).toBeUndefined()
+})
+
+test('this session wins over the repo, and the repo over the settings', { options: { guard: 'confirm' } }, async ($, on) => {
+  engine(on, { store: { 'repo:/work/app': { guard: false } } })
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await clock.advance(2 * HOUR)
+  expect((await send($, 'repo off beats settings on')).drop).toBeUndefined()
+  await cache($, 'guard on')
+  expect((await send($, 'session on beats repo off')).drop).toContain('went cold')
+})
+
+test('Keep Warm kept on for the repo pings in a new session there', async ($, on) => {
+  const { seen } = engine(on, { store: { 'repo:/work/app': { warm: true } } })
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await clock.advance(56 * MIN)
+  expect(seen.forks).toBe(1)
+  expect(await cache($, 'warm repo reset')).toBe('/work/app follows the plugin settings again: Keep Warm is off.')
+  await clock.advance(HOUR)
+  expect(seen.forks).toBe(1)
+})
+
+test('the pane shows where each switch is set and keeps the current state for the repo with one press', async ($, on) => {
+  const { store } = engine(on)
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...pane(), surface })
+    expect(await ui.find({ type: 'Text', text: 'Follows settings' })).toBeDefined()
+    await ui.unmount()
+  }
+  await cache($, 'warm on')
+  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: 'This session' })).toBeDefined()
+  await ui.press({ key: 'warm-repo' })
+  await ui.unmount()
+  expect(store.get('repo:/work/app')).toEqual({ warm: true })
+  const after = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  expect(await after.find({ type: 'Text', text: 'Always on' })).toBeDefined()
+  expect(await after.find({ type: 'Text', text: 'This repo' })).toBeDefined()
+  await after.press({ key: 'warm-repo' })
+  await after.unmount()
+  expect(store.get('repo:/work/app')).toBeUndefined()
 })
 
 // ── Keep Warm ───────────────────────────────────────────────────────────────

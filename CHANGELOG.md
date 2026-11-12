@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-11-12
+
+### Added
+
+- Keep Warm and the cold send guard can be kept on or off per repo: `/cache guard repo on|off|reset`, `/cache warm repo on|off|reset`, or one button in the pane. A repo's choice holds in every new session there and in its worktrees, over the plugin settings; a session's own switch still wins.
+- The pane and `/cache` say for each switch which level set it: this session, this repo or the plugin settings.
+
+### Changed
+
+- The cold send guard is off by default, like Keep Warm. Both are switched on in the plugin settings for every repo, per repo or per session. An unknown `guard` value now reads as off.
+
 ## [0.3.2] - 2026-11-10
 
 ### Changed

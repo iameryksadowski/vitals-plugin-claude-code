@@ -1,7 +1,7 @@
 {
   "name": "vitals",
   "displayName": "Vitals",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Everything about the session Claude Code does not show on its own, in one row above the prompt: prompt cache warm or cold, what the next message costs, the account and its usage limits with resets, the context and when to compact. A pane with Now, Context, Cost, Timeline and Settings; a terminal status line with the fields you choose; $.vitals for other plugins. Works in the terminal and the desktop app. By Eryk Sadowski.",
   "author": {
     "name": "Eryk Sadowski",
@@ -109,7 +109,7 @@
     "accountLabels": {
       "type": "string",
       "title": "Account labels",
-      "description": "Your own name per config folder, e.g. '.claude=A, .claude-b=Work, .claude-c=3'. Empty: a letter from the folder (.claude is A, .claude-b is B).",
+      "description": "Your own name per config folder, e.g. '.claude=Personal, .claude-work=Work'. Empty: a letter from the folder (.claude is A, .claude-b is B) when there are several accounts, nothing with one. /vitals account Work names the current one.",
       "default": ""
     },
     "alfred": {

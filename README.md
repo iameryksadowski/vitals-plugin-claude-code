@@ -2,7 +2,7 @@
 
 **The session's vital signs for Claude Code**, in one row above the prompt: is the prompt cache still warm, what will the next message cost, how much of your usage limit is left and when it resets, how full the context is and whether now is a good moment to compact. Everything else is one click away in a side pane.
 
-[![Version](https://img.shields.io/badge/version-0.6.0-10b981)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.6.1-10b981)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-10b981)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-2.1.287%2B-18181b)](https://github.com/anthropics/claude-code)
 
@@ -42,7 +42,7 @@ Vitals was called Cache Meter until 0.6.0. Run `claude plugin uninstall cache-me
 | --- | --- |
 | **Cache** | Warm with the time left (a warning color in the last 10 minutes, last minute on a 5m TTL), or cold with the idle time. After a compaction, or a session that comes back after a restart, it knows the cache is cold. |
 | **Next** | What re-sending the context costs while warm (cache read), and in the last minutes what it will cost once cold (cache write). |
-| **Account and limits** | Which account (config folder) the session runs on, and percent used with the time to reset for each limit your plan reports (an Ultra plan reports only the weekly one). Warning at 80%, error at 95%. Resets read as `6d 15h`, within a day as `14h 20m`. |
+| **Account and limits** | Which account the session runs on, when you run more than one (see [Accounts](#accounts)), and percent used with the time to reset for each limit your plan reports (an Ultra plan reports only the weekly one). Warning at 80%, error at 95%. Resets read as `6d 15h`, within a day as `14h 20m`. |
 | **Context** | Tokens in the context and their share of the window. |
 | **Compact** | A hint, with the reason, only when compacting is worth it. See [Compaction](#compaction). |
 
@@ -55,9 +55,9 @@ As the window narrows, parts drop out strictly by priority: the cache state stay
 | Tab | Shows |
 | --- | --- |
 | Now | The account (e-mail, model, effort, mode, output style, folder and branch), the prompt cache with its TTL bar, what the next message costs warm and cold, every usage limit |
-| Context | How full the context is, auto-compact (on or off, and at what share) with a switch, the compact advice with **Compact Now**, what fills the context (as `/context` counts it, estimated locally) and the heaviest MCP servers |
+| Context | How full the context is, auto-compact (on or off, and at what share) with a switch, the compact advice with **Compact Now**, what fills the window (as `/context` counts it, estimated locally; tool schemas loaded on demand and the auto-compact reserve are listed apart, since they take no room) and the heaviest MCP servers, connectors named by their tools |
 | Cost | Requests, cache hit rate, tokens read, written and uncached, what caching saved, cold writes paid, the last request, the session total |
-| Timeline | When each message went and how long each reply took, with its tool count, and the breaks after which the cache went cold |
+| Timeline | When each message went and how it opens, who sent it (you, another Claude session, a finished task, a scheduled prompt or the app), how long each reply took with its opening line and tool count, and the breaks after which the cache went cold |
 | Settings | Where the status line is drawn, Keep Warm, the cold send guard, the compact hint, the Alfred send |
 
 ## Compaction
@@ -103,7 +103,7 @@ The band and the status line take the same fields. The band keeps them by priori
 
 | Field | Shows |
 | --- | --- |
-| `account` | The account: a letter from the config folder (`~/.claude` is A, `~/.claude-b` is B) or your own label (`accountLabels`) |
+| `account` | The account's name, when there is more than one (see [Accounts](#accounts)) |
 | `email` | E-mail of the signed-in account, from its login record. Shown only, never sent |
 | `model` | Model with its version (Opus 5.5) |
 | `effort` | Reasoning effort |
@@ -134,6 +134,18 @@ Change them for this account (every later session keeps the choice, over the plu
 ```
 
 Or in `/plugin configure vitals@vitals`: `bandFields`, `lineFields`, `statusLine`, `resetStyle`, `accountLabels`.
+
+## Accounts
+
+Most people run Claude Code on one account, and then Vitals leaves the account out: there is nothing to tell apart. If you run several (each in its own config folder through `CLAUDE_CONFIG_DIR`, such as `~/.claude` and `~/.claude-work`), each session shows which one it is on.
+
+| Name | Comes from |
+| --- | --- |
+| Your own | `/vitals account Work`, kept for every session on that account. `/vitals account reset` hands it back. |
+| From the settings | `accountLabels` in `/plugin configure vitals@vitals`, such as `.claude=Personal, .claude-work=Work` |
+| Automatic | A letter from the config folder: `~/.claude` is A, `~/.claude-b` is B, `~/.claude-work` is WORK |
+
+`/vitals account` says which one is in use, and the pane's Now tab shows it too.
 
 ## Keep Warm
 
@@ -173,7 +185,7 @@ All in `/plugin configure vitals@vitals`, stored as `pluginConfigs` in your user
 | `resetStyle` | `auto`, `countdown`, `clock`, `both` | `auto`: a countdown, `6d 15h` or `14h 20m` |
 | `compactHint` | `on`, `off` | `on` |
 | `compactAt` | `30` to `70` | `50`: with a cold cache, the context share from which the hint shows |
-| `accountLabels` | `.claude=A, .claude-b=Work` | a letter from the folder |
+| `accountLabels` | `.claude=Personal, .claude-work=Work` | a letter from the folder, or nothing with one account |
 | `alfred` | `off`, `on` | `off` |
 | `alfredHome` | a folder | `~/Development/alfred-app` |
 | `alfredUrl` | a URL | `http://127.0.0.1:8765` |

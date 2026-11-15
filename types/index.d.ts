@@ -65,6 +65,12 @@ export type RepoPrefs = { root: string | null; guard: boolean | null; warm: bool
  */
 export type Who = {
   label: string
+  /**
+   * Where the label comes from: set with /vitals account, the accountLabels
+   * setting, the config folder's letter, or `single` when this is the only
+   * account on the machine (then the band and the line leave it out).
+   */
+  labelFrom: 'own' | 'setting' | 'folder' | 'single'
   configDir: string
   email: string | null
   mode: string | null
@@ -86,7 +92,19 @@ export type Layout = { band: string[] | null; line: string[] | null; status: 'au
 export type AlfredSend = { at: number; ok: boolean; status: number; error: string | null; sent: number }
 
 /** One moment of the session's timeline: a message sent, or a reply with how long it took and how many tools it ran. */
-export type TimelineEntry = { at: number; who: 'you' | 'claude'; text: string | null; ms: number | null; tools: number | null }
+export type TimelineEntry = {
+  at: number
+  /**
+   * Who sent it: you, Claude's reply, another Claude session, a background
+   * task finishing, a scheduled or looped prompt, or the app itself.
+   */
+  who: 'you' | 'claude' | 'session' | 'task' | 'schedule' | 'system'
+  text: string | null
+  ms: number | null
+  tools: number | null
+  /** The sending session, for a message from another session. */
+  from?: string | null
+}
 
 /**
  * The context as /context counts it, read now and then: the auto-compact
@@ -100,8 +118,14 @@ export type ContextInfo = {
   autoOn: boolean | null
   threshold: number | null
   window: number
+  /** What occupies the window now, as /context lists it: no free space, reserve or deferred schemas. */
   categories: Array<{ name: string; tokens: number }>
-  mcp: Array<{ server: string; tokens: number }>
+  /** Tool schemas loaded on demand: outside the window until searched for. */
+  deferred: number
+  /** The reserve auto-compact keeps free. */
+  buffer: number
+  /** MCP servers by tool schema size: in the window now, and loaded on demand. */
+  mcp: Array<{ server: string; label: string; tokens: number; deferred: number }>
 }
 
 /** The pane's open tab. */
@@ -173,6 +197,7 @@ declare module 'claude-code' {
       compacted: Shaped<boolean>
       timeline: Shaped<TimelineEntry[]>
       ctxinfo: Shaped<ContextInfo | null>
+      resumed: Shaped<number | null>
       tab: Shaped<PaneTab>
     }
   }

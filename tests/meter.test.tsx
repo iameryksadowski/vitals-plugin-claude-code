@@ -15,12 +15,12 @@ const HOUR = 60 * MIN
 const bandProps = (bodyColumns = 200, hasSurvey = false) =>
   ({ hasSurvey, isCollapsed: false, isWorking: false, maxRows: 4, bodyColumns, scroll: { offset: 0, bodyRows: 4 }, view: {} }) as const
 const band = (bodyColumns?: number, hasSurvey?: boolean) =>
-  ({ plugin: 'cache-meter', component: 'AbovePrompt', props: bandProps(bodyColumns, hasSurvey) }) as const
+  ({ plugin: 'vitals', component: 'AbovePrompt', props: bandProps(bodyColumns, hasSurvey) }) as const
 const pane = (bodyColumns = 60) =>
   ({
-    plugin: 'cache-meter',
+    plugin: 'vitals',
     component: 'Pane',
-    requestId: 'cache-meter',
+    requestId: 'vitals',
     props: { title: 'Prompt Cache', isFocused: false, bodyColumns, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
   }) as const
 
@@ -43,11 +43,40 @@ type World = {
   engineRow?: boolean
   root?: string
   store?: Record<string, unknown>
+  /** The /context breakdown the engine hands back when asked for one. */
+  breakdown?: Breakdown
+  /** What `session.compact` answers: the compacted conversation, or a skip. */
+  compact?: Compaction
+  /** What `config.set` answers. */
+  config?: { deny: string }
+}
+
+/** What `session.compact` answers: the conversation after it (its summary), or a skip. */
+type Compaction = { messages: Array<{ role: 'user'; text: string; toolUses: never[] }> } | { skip: string }
+const SUMMARY: Compaction = { messages: [{ role: 'user', text: 'Summary of the conversation so far.', toolUses: [] }] }
+
+type Breakdown = {
+  categories: Array<{ name: string; tokens: number; color: string; isDeferred: boolean; kind: 'used' | 'free' | 'buffer' | 'deferred' }>
+  maxTokens: number
+  autoCompactThreshold?: number
+  isAutoCompactEnabled: boolean
+  mcpTools: Array<{ name: string; serverName: string; tokens: number; isLoaded: boolean }>
+}
+
+const cat = (name: string, tokens: number, kind: 'used' | 'free' = 'used') => ({ name, tokens, color: 'text', isDeferred: false, kind })
+const tool = (serverName: string, name: string, tokens: number) => ({ name: `mcp__${serverName}__${name}`, serverName, tokens, isLoaded: true })
+/** A 1M window with auto-compact on at 330k: a 301k context is within ten points of it. */
+const BREAKDOWN: Breakdown = {
+  categories: [cat('System prompt', 20_000), cat('Messages', 250_000), cat('MCP tools', 31_000), cat('Free space', 699_000, 'free')],
+  maxTokens: 1_000_000,
+  autoCompactThreshold: 330_000,
+  isAutoCompactEnabled: true,
+  mcpTools: [tool('linear', 'create_issue', 12_000), tool('figma', 'get_design', 9_000), tool('linear', 'list_issues', 10_000)],
 }
 
 /** The engine beneath the plugin, with counters a test reads back. */
 const engine = (on: On, w: World = {}) => {
-  const seen = { forks: 0, logs: [] as string[], toasts: [] as string[] }
+  const seen = { forks: 0, logs: [] as string[], toasts: [] as string[], compacts: 0, config: [] as Array<{ key: string; value: unknown }> }
   const store = new Map<string, unknown>(Object.entries(w.store ?? {}))
   on('store.get', (_, e) => ({ value: store.get((e as { key: string }).key) }))
   on('store.set', (_, e) => {
@@ -60,18 +89,46 @@ const engine = (on: On, w: World = {}) => {
     return { value: undefined }
   })
   on('store.keys', () => ({ value: [...store.keys()] }))
-  const state = { usage: w.usage ?? OPUS, limits: w.limits ?? [FIVE_HOUR, WEEKLY], fork: w.fork ?? FORK_HIT, root: w.root ?? '/work/app' }
-  on('session.usage', () => ({
+  // The default config folder: account A.
+  mock.env(on, { HOME: '/Users/test' })
+  const state = {
+    usage: w.usage ?? OPUS,
+    limits: w.limits ?? [FIVE_HOUR, WEEKLY],
+    fork: w.fork ?? FORK_HIT,
+    root: w.root ?? '/work/app',
+    breakdown: w.breakdown ?? null,
+    compact: w.compact ?? SUMMARY,
+  }
+  on('session.usage', (_, e) => ({
     value: {
       startedAt: 0,
-      context: { tokens: 300_000, window: 1_000_000, percent: 30 },
+      context: {
+        tokens: 300_000,
+        window: 1_000_000,
+        percent: 30,
+        ...((e as { breakdown?: string } | undefined)?.breakdown && state.breakdown ? { breakdown: state.breakdown as never } : {}),
+      },
       rateLimits: state.limits,
       cost: w.cost === null ? undefined : { usd: w.cost ?? 3.5 },
     },
   }))
   on('session.model', () => ({ value: state.usage.model }))
   on('session.root', () => ({ value: state.root }))
-  on('command.register', () => ({ value: { command: 'cache' } }))
+  on('session.cwd', () => ({ value: state.root }))
+  on('session.id', () => ({ value: 'sess-1' }))
+  on('session.compact', () => {
+    seen.compacts += 1
+    return state.compact as never
+  })
+  on('config.set', (_, e) => {
+    const { key, value } = e as { key: string; value: unknown }
+    seen.config.push({ key, value })
+    return w.config ?? { value: value as never }
+  })
+  on('classic.UserPromptSubmit', () => ({}))
+  on('turn.complete', () => ({ text: '' }))
+  on('tool.call', () => ({ result: 'ok' }) as never)
+  on('command.register', () => ({ value: { command: 'vitals' } }))
   on('ui.open', () => ({ value: w.placed === false ? { isPlaced: false as const, reason: 'no room for a pane' } : { isPlaced: true as const } }))
   on('ui.log', (_, e) => {
     seen.logs.push(String((e as { text?: unknown }).text ?? ''))
@@ -107,7 +164,7 @@ const step = async ($: $T, extra: { agentId?: string; effort?: 'low' | 'medium' 
 }
 
 /** /cache as typed, with whatever follows it. */
-const cache = async ($: $T, args = '') => ((await $.command.run({ command: 'cache', args } as never)) as { text?: string }).text ?? ''
+const cache = async ($: $T, args = '') => ((await $.command.run({ command: 'vitals', args } as never)) as { text?: string }).text ?? ''
 
 const send = ($: $T, text: string, kind = 'composer') => $.prompt.submit({ text, origin: { kind } as never, wait: false })
 
@@ -130,6 +187,19 @@ const expectTidy = (line: string) => {
 }
 
 const texts = async (ui: { findAll: (q: { type: 'Text' }) => Promise<Array<{ text: string }>> }) => (await ui.findAll({ type: 'Text' })).map(t => t.text)
+
+type Tab = 'now' | 'context' | 'cost' | 'timeline' | 'settings'
+/** The pane mounted and switched to one tab, as a person pressing the tab button does. */
+const paneAt = async ($: $T, tab: Tab, columns = 60, surface: 'terminal' | 'desktop' | 'vscode' | 'mobile' = 'desktop') => {
+  const ui = await $.ui.mount({ ...pane(columns), surface })
+  await ui.press({ key: `tab-${tab}` })
+  return ui
+}
+
+/** Lets the plugin's fire-and-forget work (a store write, a context read) run: a few round trips through the engine. */
+const settle = async ($: $T) => {
+  for (let i = 0; i < 10; i++) await $.command.run({ command: 'vitals', args: 'fields' } as never)
+}
 
 const switchModel = ($: $T, to: string, from = 'claude-opus-5-5', ttl: '5m' | '1h' = '1h') =>
   $.classic.PostModelSwitch({
@@ -154,14 +224,25 @@ test('before the first reply the band waits, tidy, with no figures it does not h
     const { line, hasDetails } = await bandLine($, 200, surface)
     expectTidy(line)
     expect(line.startsWith('○ Prompt Cache Waiting for the first reply')).toBe(true)
-    // The limits and the session cost are known before any reply; the cache figures are not.
-    for (const none of ['Hit Rate', 'Next', 'If Cold', 'Context']) expect(line).not.toContain(none)
+    // The limits and the live context are known before any reply; the cache figures are not.
+    for (const none of ['Next', 'Cold', 'Warm', 'Compact']) expect(line).not.toContain(none)
     expect(line).toContain('Weekly 88% 2d 4h')
+    expect(line).toContain('Context 300k 30%')
     expect(hasDetails).toBe(true)
   }
 })
 
 test('a warm cache reads exactly as expected, in reading order', async ($, on) => {
+  engine(on)
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  const { line } = await bandLine($)
+  expectTidy(line)
+  expect(line).toBe(['● Cache Warm 1h 00m left', 'Next $0.06', 'A', '5-Hour 42% 3h 10m', 'Weekly 88% 2d 4h', 'Context 301k 30%'].join(SEP))
+})
+
+test('the band shows the other fields on request, in the order asked', { options: { bandFields: 'cache, next, ifcold, context, hit, 5h, 7d, spend, session' } }, async ($, on) => {
   engine(on)
   mock.clock(on, { now: NOW })
   await start($)
@@ -215,7 +296,7 @@ test('a plan with the weekly limit alone shows Weekly and no 5-hour limit, and c
   await ui.unmount()
 })
 
-test('an API key with no limits caches for 5 minutes and shows no limit', async ($, on) => {
+test('an API key with no limits caches for 5 minutes and shows no limit', { options: { bandFields: 'cache, next, ifcold, 5h, 7d, spend, context' } }, async ($, on) => {
   engine(on, { limits: [], cost: 0.42 })
   const clock = mock.clock(on, { now: NOW })
   await start($)
@@ -348,18 +429,30 @@ test('/clear starts over: no state, no session figures', async ($, on) => {
   expect(line).not.toContain('Hit Rate')
 })
 
-test('after compaction the state waits for the next reply and the session figures stay', async ($, on) => {
+test('after compaction the cache is cold, compacted, priced from the live context, and the session figures stay', async ($, on) => {
   engine(on)
   mock.clock(on, { now: NOW })
   await start($)
   await step($)
   await $.classic.SessionStart({ source: 'compact' } as never)
   const { line } = await bandLine($)
-  expect(line).toContain('Waiting for the next reply')
-  expect(line).toContain('Hit Rate 96%')
-  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: 'Known after the next reply' })).toBeDefined()
-  await ui.unmount()
+  expectTidy(line)
+  // The live context is 300k: written on Opus 5.5 at the 1h rate, $8/MTok.
+  expect(line).toBe(['● Cache Cold Compacted', 'Next $2.40 Re-cache', 'A', '5-Hour 42% 3h 10m', 'Weekly 88% 2d 4h', 'Context 300k 30%'].join(SEP))
+  expect(line).not.toContain('Idle')
+  expect(line).not.toContain('Waiting')
+  // A just-compacted cache is no reason to compact again.
+  expect(line).not.toContain('Compact cache cold')
+  const now = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  expect(await now.find({ type: 'Text', text: /Compacted, the next message writes the summary/ })).toBeDefined()
+  await now.unmount()
+  const cost = await paneAt($, 'cost')
+  expect(await cost.find({ type: 'Text', text: '96%' })).toBeDefined()
+  expect(await cost.find({ type: 'Text', text: 'None yet' })).toBeUndefined()
+  await cost.unmount()
+  // The first reply after it writes the cache: warm again.
+  await step($)
+  expect((await bandLine($)).line).toContain('● Cache Warm 1h 00m left')
 })
 
 test('a resumed session knows how long it was away', async ($, on) => {
@@ -456,16 +549,47 @@ test('the pane breaks everything down on every surface and at any width', async 
   await start($)
   await step($)
   await step($)
+  const WANT: Record<Tab, string[]> = {
+    now: ['Account', 'Prompt Cache', 'Next Message', 'Usage Limits', 'Opus 5.5', 'Extra High'],
+    context: ['Context', 'Auto-Compact', 'Advice'],
+    cost: ['This Session', '96%', '2'],
+    timeline: ['Timeline'],
+    settings: ['Status Line', 'Keep Warm', 'Cold Send Guard', 'Compact Hint'],
+  }
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     for (const columns of [24, 40, 60, 120]) {
-      const ui = await $.ui.mount({ ...pane(columns), surface })
-      const all = await texts(ui)
-      for (const want of ['Prompt Cache', 'Next Message', 'Keep Warm', 'This Session', 'Usage Limits', 'Opus 5.5', 'Extra High', '96%', '2']) {
-        expect([surface, columns, want, all.includes(want)]).toEqual([surface, columns, want, true])
+      for (const tab of ['now', 'context', 'cost', 'timeline', 'settings'] as const) {
+        const ui = await paneAt($, tab, columns, surface)
+        const all = await texts(ui)
+        for (const want of WANT[tab]) expect([surface, columns, tab, want, all.includes(want)]).toEqual([surface, columns, tab, want, true])
+        // Each tab holds its own cards only.
+        for (const other of ['Keep Warm', 'This Session', 'Next Message']) {
+          if (!WANT[tab].includes(other)) expect([surface, columns, tab, other, all.includes(other)]).toEqual([surface, columns, tab, other, false])
+        }
+        expect(all.some(t => t.includes('n/a') || t.includes('NaN') || t.includes('undefined'))).toBe(false)
+        await ui.unmount()
       }
-      expect(all.some(t => t.includes('n/a') || t.includes('NaN') || t.includes('undefined'))).toBe(false)
-      await ui.unmount()
     }
+  }
+})
+
+test('the pane opens on Now; /cache settings, cost, context and timeline open it on that tab', async ($, on) => {
+  engine(on)
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  const first = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  expect(await first.find({ type: 'Text', text: 'Prompt Cache' })).toBeDefined()
+  expect(await first.find({ type: 'Text', text: 'Keep Warm' })).toBeUndefined()
+  expect((await first.find({ key: 'tab-now' }))?.props.variant).toBe('primary')
+  await first.unmount()
+  for (const [tab, label, card] of [['settings', 'Settings', 'Keep Warm'], ['cost', 'Cost', 'This Session'], ['context', 'Context', 'Auto-Compact'], ['timeline', 'Timeline', 'Timeline']] as const) {
+    expect(await cache($, tab)).toBe(`${label} is open in the side pane.`)
+    const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+    expect([tab, (await ui.find({ key: `tab-${tab}` }))?.props.variant]).toEqual([tab, 'primary'])
+    expect([tab, (await ui.find({ type: 'Text', text: card })) !== undefined]).toEqual([tab, true])
+    expect([tab, (await ui.find({ type: 'Text', text: 'Next Message' })) === undefined]).toEqual([tab, true])
+    await ui.unmount()
   }
 })
 
@@ -509,7 +633,7 @@ test('the first message into a cold cache is held once with its price; the resen
   await clock.advance(HOUR + 5 * MIN)
   const first = await send($, 'what next?')
   expect(first.drop).toBe(
-    'Cache Meter: The prompt cache went cold 5m ago. This message re-writes ~301k tokens on Opus 5.5 for $2.41 (a warm read would be $0.06). Send it again to go ahead, or /clear and start from a short summary. /cache guard off stops these holds.',
+    'Vitals: The prompt cache went cold 5m ago. This message re-writes ~301k tokens on Opus 5.5 for $2.41 (a warm read would be $0.06). Send it again to go ahead, or /clear and start from a short summary. /vitals guard off stops these holds.',
   )
   expect((await send($, 'what next?')).drop).toBeUndefined()
 })
@@ -556,13 +680,13 @@ test('the guard switches off and on from the pane and with /cache guard, for thi
   await start($)
   await step($)
   await clock.advance(2 * HOUR)
-  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  const ui = await paneAt($, 'settings')
   expect(await ui.find({ type: 'Text', text: 'Cold Send Guard' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Holds the message once/ })).toBeDefined()
   await ui.press({ key: 'guard-toggle' })
   await ui.unmount()
   expect((await send($, 'straight through')).drop).toBeUndefined()
-  const after = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  const after = await paneAt($, 'settings')
   expect(await after.find({ type: 'Text', text: /Every message goes straight through/ })).toBeDefined()
   await after.unmount()
 
@@ -580,7 +704,7 @@ test('switched on over an off setting the guard holds; over warn it keeps warnin
   await start($)
   await step($)
   await clock.advance(2 * HOUR)
-  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  const ui = await paneAt($, 'settings')
   expect(await ui.find({ type: 'Text', text: /Every message goes straight through/ })).toBeDefined()
   await ui.unmount()
   expect(await cache($, 'guard')).toBe('The cold send guard is on for this session.')
@@ -606,9 +730,9 @@ test('/cache prints the guard where no pane can be seated', async ($, on) => {
   mock.clock(on, { now: NOW })
   await start($)
   await step($)
-  expect(await cache($)).toContain('Cold Guard    Off (Plugin settings, every repo). /cache guard switches it.')
+  expect(await cache($)).toContain('Cold Guard    Off (Plugin settings, every repo). /vitals guard switches it.')
   await cache($, 'guard on')
-  expect(await cache($)).toContain('Cold Guard    On, holds the message once (This session). /cache guard switches it.')
+  expect(await cache($)).toContain('Cold Guard    On, holds the message once (This session). /vitals guard switches it.')
 })
 
 test('out of the box the guard and Keep Warm are both off: a cold send goes straight through and nothing pings', async ($, on) => {
@@ -616,8 +740,9 @@ test('out of the box the guard and Keep Warm are both off: a cold send goes stra
   const clock = mock.clock(on, { now: NOW })
   await start($)
   await step($)
-  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  const ui = await paneAt($, 'settings')
   expect(await ui.find({ type: 'Text', text: /Every message goes straight through/ })).toBeDefined()
+  expect((await ui.find({ key: 'keep-warm-toggle' }))?.text).toBe('Turn On')
   expect((await ui.findAll({ type: 'Text', text: 'Plugin settings, every repo' })).length).toBe(2)
   await ui.unmount()
   await clock.advance(2 * HOUR)
@@ -670,7 +795,7 @@ test('/cache guard repo on keeps it for the repo and takes over this session; re
   await start($)
   await step($)
   await clock.advance(2 * HOUR)
-  expect(await cache($, 'guard repo')).toBe('The cold send guard is off here. This repo follows the plugin settings. /cache guard repo on, off or reset changes that.')
+  expect(await cache($, 'guard repo')).toBe('The cold send guard is off here. This repo follows the plugin settings. /vitals guard repo on, off or reset changes that.')
   await cache($, 'guard on')
   expect(await cache($, 'guard repo off')).toBe('The cold send guard is off in every session in /work/app.')
   expect((await send($, 'repo says off')).drop).toBeUndefined()
@@ -711,17 +836,17 @@ test('the pane shows where each switch is set and keeps the current state for th
   await start($)
   await step($)
   for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({ ...pane(), surface })
+    const ui = await paneAt($, 'settings', 60, surface)
     expect(await ui.find({ type: 'Text', text: 'Follows settings' })).toBeDefined()
     await ui.unmount()
   }
   await cache($, 'warm on')
-  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  const ui = await paneAt($, 'settings')
   expect(await ui.find({ type: 'Text', text: 'This session' })).toBeDefined()
   await ui.press({ key: 'warm-repo' })
   await ui.unmount()
   expect(store.get('repo:/work/app')).toEqual({ warm: true })
-  const after = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  const after = await paneAt($, 'settings')
   expect(await after.find({ type: 'Text', text: 'Always on' })).toBeDefined()
   expect(await after.find({ type: 'Text', text: 'This repo' })).toBeDefined()
   await after.press({ key: 'warm-repo' })
@@ -745,12 +870,13 @@ test('Keep Warm switches from the pane and with /cache warm', async ($, on) => {
   mock.clock(on, { now: NOW })
   await start($)
   await step($)
-  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: 'Off' })).toBeDefined()
+  const ui = await paneAt($, 'settings')
+  expect((await ui.find({ key: 'keep-warm-toggle' }))?.text).toBe('Turn On')
   await ui.press({ key: 'keep-warm-toggle' })
   await ui.unmount()
-  const after = await $.ui.mount({ ...pane(), surface: 'desktop' })
-  expect(await after.find({ type: 'Text', text: 'On' })).toBeDefined()
+  const after = await paneAt($, 'settings')
+  expect((await after.find({ key: 'keep-warm-toggle' }))?.text).toBe('Turn Off')
+  expect(await after.find({ type: 'Text', text: 'This session' })).toBeDefined()
   await after.unmount()
   expect(await cache($, 'warm off')).toBe('Keep Warm is off for this session.')
   expect(await cache($, 'warm on')).toBe('Keep Warm is on for this session.')
@@ -776,8 +902,10 @@ test('Keep Warm pings five minutes before the end, keeps it warm, and stops afte
   expect(seen.forks).toBe(2)
   ;({ line } = await bandLine($))
   expect(line).toContain('Cold')
-  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  // The Pings row on the Settings tab counts both.
+  const ui = await paneAt($, 'settings')
   expect(await ui.find({ type: 'Text', text: '2' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /\$0\.\d\d in all/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -791,8 +919,9 @@ test('a ping that finds the cache gone switches Keep Warm off and says so', { op
   expect(seen.toasts.join('\n')).toContain('switched itself off')
   await clock.advance(2 * HOUR)
   expect(seen.forks).toBe(1)
-  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  const ui = await paneAt($, 'settings')
   expect(await ui.find({ type: 'Text', text: /1 too late/ })).toBeDefined()
+  expect((await ui.find({ key: 'keep-warm-toggle' }))?.text).toBe('Turn On')
   await ui.unmount()
 })
 
@@ -805,8 +934,8 @@ test('a fork with nothing to fork or an API error changes nothing', { options: {
   expect(seen.forks).toBeGreaterThan(0)
   state.fork = { isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded', usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }
   await clock.advance(MIN)
-  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: 'On' })).toBeDefined()
+  const ui = await paneAt($, 'settings')
+  expect((await ui.find({ key: 'keep-warm-toggle' }))?.text).toBe('Turn Off')
   expect(await ui.find({ type: 'Text', text: /too late/ })).toBeUndefined()
   await ui.unmount()
   // Never counted as a ping, so the cache still runs out on time.
@@ -822,4 +951,193 @@ test('Keep Warm never pings a cache the model switch already lost', { options: {
   await switchModel($, 'claude-sonnet-5-5')
   await clock.advance(56 * MIN)
   expect(seen.forks).toBe(0)
+})
+
+// ── A session that comes back ───────────────────────────────────────────────
+
+test('the last request of each session is kept by session id, and a new start with no facts seeds from it', async ($, on) => {
+  const other = { lastAt: NOW - 3 * HOUR, ctx: 50_000, window: 200_000, model: 'claude-sonnet-5-5', effort: 'low' }
+  const { store } = engine(on, {
+    store: { sessions: { 'sess-1': { lastAt: NOW - 20 * MIN, ctx: 301_000, window: 1_000_000, model: 'claude-opus-5-5', effort: 'xhigh' }, 'sess-0': other } },
+  })
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  // The real idle time, not a wait for the first reply.
+  const { line } = await bandLine($)
+  expect(line.startsWith(['● Cache Warm 40m left', 'Next $0.06'].join(SEP))).toBe(true)
+  expect(line).not.toContain('Waiting')
+  await clock.advance(MIN)
+  await step($)
+  await settle($)
+  const kept = store.get('sessions') as Record<string, unknown>
+  expect(kept['sess-1']).toEqual({ lastAt: NOW + MIN, ctx: 301_000, window: 1_000_000, model: 'claude-opus-5-5', effort: 'xhigh' })
+  // Other sessions' entries stay.
+  expect(kept['sess-0']).toEqual(other)
+})
+
+test('a session that comes back after the TTL reads cold with its idle time', async ($, on) => {
+  engine(on, { store: { sessions: { 'sess-1': { lastAt: NOW - 2 * HOUR, ctx: 301_000, window: 1_000_000, model: 'claude-opus-5-5', effort: 'xhigh' } } } })
+  mock.clock(on, { now: NOW })
+  await start($)
+  expect((await bandLine($)).line).toContain('● Cache Cold Idle 2h 00m  │  Next $2.41 Re-cache')
+})
+
+test('a session with nothing kept for its id waits for the first reply', async ($, on) => {
+  engine(on, { store: { sessions: { 'sess-0': { lastAt: NOW - 20 * MIN, ctx: 301_000, window: 1_000_000, model: 'claude-opus-5-5', effort: 'xhigh' } } } })
+  mock.clock(on, { now: NOW })
+  await start($)
+  expect((await bandLine($)).line).toContain('○ Prompt Cache Waiting for the first reply')
+})
+
+// ── Compacting ──────────────────────────────────────────────────────────────
+
+test('a compaction of the main conversation makes the band read Cold, Compacted; a subagent compaction changes nothing', async ($, on) => {
+  engine(on)
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  const messages = (SUMMARY as { messages: unknown[] }).messages
+  await $.session.compact({ trigger: 'auto', agentId: 'a1', messages } as never)
+  expect((await bandLine($)).line).toContain('● Cache Warm 1h 00m left')
+  await $.session.compact({ trigger: 'manual', messages } as never)
+  await settle($)
+  const { line } = await bandLine($)
+  expect(line.startsWith(['● Cache Cold Compacted', 'Next $2.40 Re-cache'].join(SEP))).toBe(true)
+})
+
+// `/cache compact` cannot compact inside its own command.run hook (the host refuses it under
+// the turn the hook holds), so it queues the compaction: a timer right after, or the turn's end.
+test('/cache compact queues the compaction and the end of the turn runs it', async ($, on) => {
+  const { seen } = engine(on)
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  expect(await cache($, 'compact')).toBe('Compacting as soon as this command is done.')
+  await $.turn.complete({ answer: 'done', durationMs: 1_000, isAborted: false, turnId: 't1', reason: 'answer' })
+  expect(seen.compacts).toBe(1)
+  // Its own compaction resets the cache to cold, compacted: the engine skips this plugin's own hook for it.
+  expect((await bandLine($)).line).toContain('● Cache Cold Compacted')
+})
+
+test('Compact Now asks the engine to compact; a skip leaves the cache warm', async ($, on) => {
+  const { seen, state } = engine(on)
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  state.compact = { skip: 'Not enough messages to compact' }
+  const ui = await paneAt($, 'context')
+  await ui.press({ key: 'compact-now' })
+  await ui.unmount()
+  expect(seen.compacts).toBe(1)
+  expect((await bandLine($)).line).toContain('● Cache Warm 1h 00m left')
+})
+
+test('/cache autocompact switches Claude Code auto-compact through config.set', async ($, on) => {
+  const { seen } = engine(on, { breakdown: BREAKDOWN })
+  mock.clock(on, { now: NOW })
+  await start($)
+  await settle($)
+  expect(await cache($, 'autocompact off')).toBe('Auto-compact is off.')
+  expect(seen.config).toEqual([{ key: 'autoCompact', value: false }])
+  expect(await cache($, 'autocompact on')).toBe('Auto-compact is on.')
+  // Left out, it flips what the engine reports: on here, so off.
+  expect(await cache($, 'autocompact')).toBe('Auto-compact is off.')
+  expect(seen.config.map(c => c.value)).toEqual([false, true, false])
+})
+
+test('a refused auto-compact switch says why and changes nothing', async ($, on) => {
+  const { seen } = engine(on, { breakdown: BREAKDOWN, config: { deny: 'Set by your organization' } })
+  mock.clock(on, { now: NOW })
+  await start($)
+  expect(await cache($, 'autocompact off')).toBe('Auto-compact stays on: Set by your organization')
+  expect(seen.config).toEqual([{ key: 'autoCompact', value: false }])
+})
+
+test('near auto-compact the band hints at compacting, and the Context tab breaks the context down', async ($, on) => {
+  const { seen } = engine(on, { breakdown: BREAKDOWN })
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await settle($)
+  const { line } = await bandLine($)
+  expectTidy(line)
+  expect(line.endsWith(['Context 301k 30%', 'Compact auto-compact at 33%'].join(SEP))).toBe(true)
+  const ui = await paneAt($, 'context')
+  const all = await texts(ui)
+  expect(all).toContain('Compact now: auto-compact at 33%.')
+  expect(all).toContain('  ·  Runs at 33%, 3 points to go')
+  expect(all).toContain('What Fills It')
+  // The largest category first; the free space is no part of what fills it.
+  expect(all.indexOf('Messages')).toBeLessThan(all.indexOf('MCP tools'))
+  expect(all).toContain('250k')
+  expect(all).not.toContain('Free space')
+  // MCP servers summed over their tools, heaviest first.
+  expect(all).toContain('Heaviest MCP Servers')
+  expect(all.indexOf('linear')).toBeLessThan(all.indexOf('figma'))
+  expect(all).toContain('22k')
+  await ui.press({ key: 'auto-toggle' })
+  expect(seen.config).toEqual([{ key: 'autoCompact', value: false }])
+  await ui.press({ key: 'compact-now' })
+  expect(seen.compacts).toBe(1)
+  await ui.unmount()
+})
+
+test('no hint while there is no reason; without a breakdown a cold cache over compactAt gets one', { options: { compactAt: '30' } }, async ($, on) => {
+  engine(on)
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await settle($)
+  expect((await bandLine($)).line).not.toContain('Compact')
+  await clock.advance(2 * HOUR)
+  expect((await bandLine($)).line).toContain('Compact cache cold, context 30%')
+})
+
+test('compactHint off shows no hint, even near auto-compact', { options: { compactHint: 'off' } }, async ($, on) => {
+  engine(on, { breakdown: BREAKDOWN })
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await settle($)
+  expect((await bandLine($)).line).not.toContain('Compact')
+  const ui = await paneAt($, 'context')
+  expect(await ui.find({ type: 'Text', text: 'The compact hint is off in the settings.' })).toBeDefined()
+  await ui.unmount()
+})
+
+// ── The timeline ────────────────────────────────────────────────────────────
+
+const prompt = ($: $T, text: string, source?: 'user' | 'schedule_wakeup') =>
+  $.classic.UserPromptSubmit({
+    hook_event_name: 'UserPromptSubmit', session_id: 's', transcript_path: '/t', cwd: '/work/app', prompt: text, permission_mode: 'default', ...(source ? { source } : {}),
+  } as never)
+
+test('the timeline records your message and the reply with its time and tools, and the Timeline tab shows them', async ($, on) => {
+  engine(on)
+  const clock = mock.clock(on, { now: NOW })
+  await start($)
+  const empty = await paneAt($, 'timeline')
+  expect(await empty.find({ type: 'Text', text: /^Nothing yet/ })).toBeDefined()
+  await empty.unmount()
+  await prompt($, 'Fix the login\n   bug please')
+  await $.tool.call({ name: 'Read', input: { file_path: '/work/app/a.ts' } } as never)
+  await $.tool.call({ name: 'Grep', input: { pattern: 'login' } } as never)
+  await step($)
+  await clock.advance(42_000)
+  await $.turn.complete({ answer: 'done', durationMs: 42_000, isAborted: false, turnId: 't1', reason: 'answer' })
+  // A prompt nobody typed is no message of yours.
+  await prompt($, 'scheduled check', 'schedule_wakeup')
+  await clock.advance(2 * HOUR)
+  await prompt($, 'back again')
+  expect(await cache($, 'timeline')).toBe('Timeline is open in the side pane.')
+  const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
+  const all = await texts(ui)
+  expect(all).toContain('2 messages')
+  expect(all.filter(t => t === 'You').length).toBe(2)
+  expect(all).toContain('  ·  Fix the login bug please')
+  expect(all).toContain('Claude')
+  expect(all).toContain('  ·  42s  ·  2 tools')
+  expect(all).toContain('2h 00m idle, the cache went cold')
+  expect(all.some(t => t.includes('scheduled'))).toBe(false)
+  await ui.unmount()
 })

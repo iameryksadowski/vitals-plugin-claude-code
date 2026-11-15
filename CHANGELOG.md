@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-11-15
+
+### Renamed
+
+- Cache Meter is now **Vitals**: repo `iameryksadowski/vitals-plugin-claude-code`, plugin `vitals@vitals`, command `/vitals` (`/cache` still works), statusLine script under `plugins/marketplaces/vitals/`. Settings and the fields chosen with `/cache` start fresh under the new name.
+
+### Added
+
+- The pane has five tabs: Now, Context, Cost, Timeline and Settings. `/vitals now|context|cost|timeline|settings` opens it on one.
+- Context tab: how full the context is, when auto-compact runs with a switch for it, what fills the context as `/context` counts it (estimated locally, no request) and the heaviest MCP servers.
+- A compact hint (`compact` field, on by default): the band says when compacting is worth it, when the cache is cold and the context is over `compactAt` (50%), when auto-compact is within 10 points, or over 80% with auto-compact off. `/vitals compact` and Compact Now compact; `/vitals autocompact on|off` switches Claude Code's auto-compact. Settings `compactHint` and `compactAt`.
+- Timeline tab: when each message went and how long each reply took, with its tool count, and the breaks after which the cache went cold.
+- In its last minutes the band also says what the next message costs once the cache is cold.
+- `$.vitals.snapshot()` for other plugins: this session's account, cache, context with auto-compact and advice, limits and session figures. No e-mail, nothing said in the session.
+
+### Changed
+
+- One row above the prompt by default: cache, next message cost, account, its usage limits, context and the compact hint. Fields Claude Code already shows (model, effort and permission mode are in the desktop footer) are left out of it.
+- The status line is the terminal's: `statusLine: auto` no longer pins it under the prompt in the desktop app, where the band shows the same. `on` still pins it everywhere. Its default fields are account, model, effort, cache, next, limits, context, compact hint and branch; the e-mail is in the pane.
+- Resets read as a countdown everywhere: `6d 15h`, within a day `14h 20m`. `resetStyle: clock` or `both` brings the clock back.
+- The account reads as its bare label (`A`), and the status line splits every field with a middle dot.
+
+### Fixed
+
+- After a compaction, or a session that comes back after an app restart, the band no longer says "Waiting for the next reply" for hours: the cache reads cold (compacted, or after a break), priced from the live context. Each session's last request is kept, so a session that comes back shows its real idle time.
+
 ## [0.5.0] - 2026-11-15
 
 ### Added

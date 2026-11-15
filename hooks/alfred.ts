@@ -30,7 +30,7 @@ export const alfredBody = (a: AlfredInput) => {
   if (Object.keys(rate).length === 0 && !hasContext) return null
   return {
     zrodlo: 'statusline',
-    klient: 'cache-meter',
+    klient: 'vitals',
     config_dir: a.configDir,
     sesja: a.session,
     model: a.model,

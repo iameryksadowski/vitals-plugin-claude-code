@@ -1,12 +1,14 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderChildren } from 'claude-code'
+import type { CommandRunInput, EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { AlfredSend, CacheFacts, EngineCache, KeepWarm, Layout, Limit, RepoPrefs, Stats, Who } from '../types'
+import { meterApi, setLatest, shareOf } from './share'
+import type { AlfredSend, CacheFacts, ContextInfo, EngineCache, KeepWarm, Layout, Limit, PaneTab, RepoPrefs, Stats, TimelineEntry, Who } from '../types'
 import { ALFRED_EVERY_MS, alfredBody, homePath } from './alfred'
+import { adviceOf, autoPct, sharePct } from './context'
 import { SEP, fit, spaced } from './band'
 import type { Segment } from './band'
 import {
-  BAND_DEFAULT, FIELDS, FIELD_INFO, LINE_DEFAULT, PRIO, accountOf, fieldsOr, lineOf, loginFileOf, parseFields, piecesOf,
+  BAND_DEFAULT, FIELDS, FIELD_INFO, LINE_DEFAULT, PRIO, accountOf, clockOf, fieldsOr, lineOf, loginFileOf, parseFields, piecesOf,
 } from './fields'
 import type { Field, LineData, ResetStyle } from './fields'
 import {
@@ -18,37 +20,52 @@ import type { CacheView, Ttl } from './cache'
 // A quiet meter above the prompt: whether the prompt cache is warm or cold,
 // how long it has left, how big the context is, what the next message costs
 // warm and cold, the session's cache hit rate and the usage limits the account
-// has. /cache opens a pane with the full breakdown. Keep Warm, off unless
+// has. /vitals opens a pane with the full breakdown. Keep Warm, off unless
 // switched on, pings the cache with a one-line fork before it expires.
 
-const PANE = 'cache-meter'
-const TITLE = 'Prompt Cache'
+const PANE = 'vitals'
+const TITLE = 'Vitals'
 /** How often the band redraws, so the countdown and the warm-to-cold flip stay current. */
 const TICK_MS = 15_000
+const ARGS = '[now|context|cost|timeline|settings] | compact | autocompact [on|off] | [warm|guard] [on|off] | [warm|guard] repo [on|off|reset] | [band|line] [show|hide|set|reset] [fields] | line [on|off|auto] | fields'
 /** The fork Keep Warm sends: the session's own prefix plus this, so the reply stays one word. */
-const PING = 'Cache keep-alive ping from the Cache Meter plugin. Reply with the single word OK and nothing else.'
+const PING = 'Cache keep-alive ping from the Vitals plugin. Reply with the single word OK and nothing else.'
 
 const EMPTY_STATS: Stats = { requests: 0, read: 0, write: 0, uncached: 0, output: 0, savedUsd: 0, coldWrites: 0, coldUsd: 0, last: null }
 const EMPTY_WARM: KeepWarm = { on: null, since: 0, streak: 0, pings: 0, usd: 0, lastPingAt: 0, missed: 0 }
 const EMPTY_ENGINE: EngineCache = { ttl: null, switchedTo: null }
 
-const facts = atom({ plugin: 'cache-meter', key: 'facts' } as const, null as CacheFacts | null, { shape: 'facts-2' })
-const limits = atom({ plugin: 'cache-meter', key: 'limits' } as const, [] as Limit[], { shape: 'limits-1' })
-const stats = atom({ plugin: 'cache-meter', key: 'stats' } as const, EMPTY_STATS, { shape: 'stats-1' })
-const sessionUsd = atom({ plugin: 'cache-meter', key: 'sessionUsd' } as const, null as number | null, { shape: 'usd-1' })
-const warm = atom({ plugin: 'cache-meter', key: 'warm' } as const, EMPTY_WARM, { shape: 'warm-1' })
-const engine = atom({ plugin: 'cache-meter', key: 'engine' } as const, EMPTY_ENGINE, { shape: 'engine-1' })
+const facts = atom({ plugin: 'vitals', key: 'facts' } as const, null as CacheFacts | null, { shape: 'facts-2' })
+const limits = atom({ plugin: 'vitals', key: 'limits' } as const, [] as Limit[], { shape: 'limits-1' })
+const stats = atom({ plugin: 'vitals', key: 'stats' } as const, EMPTY_STATS, { shape: 'stats-1' })
+const sessionUsd = atom({ plugin: 'vitals', key: 'sessionUsd' } as const, null as number | null, { shape: 'usd-1' })
+const warm = atom({ plugin: 'vitals', key: 'warm' } as const, EMPTY_WARM, { shape: 'warm-1' })
+const engine = atom({ plugin: 'vitals', key: 'engine' } as const, EMPTY_ENGINE, { shape: 'engine-1' })
 /** The cold send guard switched for this session; null follows the setting. */
-const holds = atom({ plugin: 'cache-meter', key: 'guard' } as const, null as boolean | null, { shape: 'guard-1' })
+const holds = atom({ plugin: 'vitals', key: 'guard' } as const, null as boolean | null, { shape: 'guard-1' })
 const EMPTY_REPO: RepoPrefs = { root: null, guard: null, warm: null }
-const repo = atom({ plugin: 'cache-meter', key: 'repo' } as const, EMPTY_REPO, { shape: 'repo-1' })
+const repo = atom({ plugin: 'vitals', key: 'repo' } as const, EMPTY_REPO, { shape: 'repo-1' })
 const EMPTY_WHO: Who = { label: 'A', configDir: '', email: null, mode: null, style: null, dir: null, branch: null, effort: null, model: null, tzMin: 0 }
-const who = atom({ plugin: 'cache-meter', key: 'who' } as const, EMPTY_WHO, { shape: 'who-1' })
+const who = atom({ plugin: 'vitals', key: 'who' } as const, EMPTY_WHO, { shape: 'who-1' })
 const EMPTY_LAYOUT: Layout = { band: null, line: null, status: null }
-const layout = atom({ plugin: 'cache-meter', key: 'layout' } as const, EMPTY_LAYOUT, { shape: 'layout-1' })
+const layout = atom({ plugin: 'vitals', key: 'layout' } as const, EMPTY_LAYOUT, { shape: 'layout-1' })
 const EMPTY_ALFRED: AlfredSend = { at: 0, ok: false, status: 0, error: null, sent: 0 }
-const alfred = atom({ plugin: 'cache-meter', key: 'alfred' } as const, EMPTY_ALFRED, { shape: 'alfred-1' })
-/** Where /cache keeps the fields chosen for this account, over the plugin settings. */
+const alfred = atom({ plugin: 'vitals', key: 'alfred' } as const, EMPTY_ALFRED, { shape: 'alfred-1' })
+const compacted = atom({ plugin: 'vitals', key: 'compacted' } as const, false, { shape: 'compacted-1' })
+const timeline = atom({ plugin: 'vitals', key: 'timeline' } as const, [] as TimelineEntry[], { shape: 'timeline-1' })
+const ctxinfo = atom({ plugin: 'vitals', key: 'ctxinfo' } as const, null as ContextInfo | null, { shape: 'ctxinfo-1' })
+const tab = atom({ plugin: 'vitals', key: 'tab' } as const, 'now' as PaneTab, { shape: 'tab-1' })
+const TABS: ReadonlyArray<{ id: PaneTab; label: string }> = [
+  { id: 'now', label: 'Now' }, { id: 'context', label: 'Context' }, { id: 'cost', label: 'Cost' }, { id: 'timeline', label: 'Timeline' }, { id: 'settings', label: 'Settings' },
+]
+/** Entries the timeline keeps: the newest. */
+const TIMELINE_MAX = 60
+/** How often the /context-style breakdown is read again, at most. */
+const CTX_EVERY_MS = 60_000
+/** The last request of each recent session, so a session that comes back knows how long the cache has been idle. */
+const SESSIONS_KEY = 'sessions'
+const SESSIONS_MAX = 40
+/** Where /vitals keeps the fields chosen for this account, over the plugin settings. */
 const LAYOUT_KEY = 'layout'
 /** The account's last known usage limits, for a new session before its first reply. */
 const LIMITS_KEY = 'limits'
@@ -86,9 +103,11 @@ type Settings = {
   reset: ResetStyle
   labels: string
   alfred: { on: boolean; home: string; url: string }
+  /** The compact hint: on or off, and the context share from which a cold cache makes it worth it. */
+  compact: { on: boolean; coldAt: number }
 }
-/** What the module keeps between calls in this load: what is pinned and written, Alfred's last send. */
-type Mem = { pinned: string | undefined; written: string | undefined; lineFile: string | null; alfredAt: number; token: string | null }
+/** What the module keeps between calls in this load: what is pinned and written, Alfred's last send, tools run this turn. */
+type Mem = { pinned: string | undefined; written: string | undefined; lineFile: string | null; alfredAt: number; token: string | null; tools: number; compactPending: boolean }
 /** Keep Warm's one ping in flight, so ticks never overlap one. */
 type PingRun = { busy: boolean }
 
@@ -129,17 +148,35 @@ async function snapshot($: EngineInterface, cfg: Settings) {
   // the next message writes all of it, on the new model's price.
   const switched = f && eng.switchedTo && eng.switchedTo !== f.model ? eng.switchedTo : null
   const base = viewOf(switched && f ? { ...f, model: switched } : f, now, ttl)
-  const view: CacheView = switched && base.state !== 'none' ? { ...base, state: 'cold', leftMs: 0 } : base
+  let view: CacheView = switched && base.state !== 'none' ? { ...base, state: 'cold', leftMs: 0 } : base
+  const st = await read($, stats)
+  const me = await read($, who)
+  const live = await liveContext($)
+  const wasCompacted = await read($, compacted)
+  const info = await read($, ctxinfo)
+  // After a compaction, or a session that has replied but lost when, the cache holds nothing of this context:
+  // it is cold, only how long it has been idle is unknown. Right after a compaction the engine has no live
+  // count until the next reply, so the /context estimate stands in.
+  const tokens = live.tokens || info?.total || 0
+  if (view.state === 'none' && (wasCompacted || st.requests > 0) && tokens) {
+    const model = me.model ?? st.last?.model ?? (await $.session.model().catch(() => null))
+    const cold = viewOf({ lastAt: 1, ctx: tokens, window: live.window || info?.window || 0, model, effort: me.effort }, now, ttl)
+    view = { ...cold, state: 'cold', idleMs: 0, leftMs: 0, why: wasCompacted ? 'compacted' : 'unknown' }
+  }
+  const facts4 = { context: live, autoOn: info?.autoOn ?? null, threshold: info?.threshold ?? null }
   return {
-    ls, ttl, now, w, view, switched,
-    st: await read($, stats),
+    ls, ttl, now, w, view, switched, live, info,
+    advice: cfg.compact.on ? adviceOf(view, facts4, cfg.compact.coldAt) : null,
+    share: sharePct(view, facts4),
+    autoAt: autoPct(facts4),
+    st,
     total: await read($, sessionUsd),
     r,
     warmOn: isWarmOn(w, r, cfg),
     warmFrom: levelOf(w.on, r.warm),
     guardMode: guardModeOf(h ?? r.guard, cfg),
     guardFrom: levelOf(h, r.guard),
-    who: await read($, who),
+    who: me,
     layout: await read($, layout),
     sent: await read($, alfred),
   }
@@ -156,7 +193,7 @@ async function liveContext($: EngineInterface): Promise<LineData['context']> {
   }
 }
 
-/** The fields the band and the status line show: chosen with /cache, else the plugin settings. */
+/** The fields the band and the status line show: chosen with /vitals, else the plugin settings. */
 const bandFields = (s: Snapshot, cfg: Settings): Field[] => fieldsOr(s.layout.band?.join(','), cfg.band)
 const lineFields = (s: Snapshot, cfg: Settings): Field[] => fieldsOr(s.layout.line?.join(','), cfg.line)
 const statusWhere = (s: Snapshot, cfg: Settings): StatusWhere => s.layout.status ?? cfg.status
@@ -179,6 +216,7 @@ const lineData = (s: Snapshot, cfg: Settings, context: LineData['context']): Lin
     requests: s.st.requests,
     hit: s.st.requests > 0 && inputs > 0 ? pctDown(s.st.read, inputs) : null,
     context,
+    advice: s.advice,
     limits: s.ls,
     now: s.now,
     total: s.total,
@@ -230,29 +268,25 @@ async function tzOf($: EngineInterface): Promise<number> {
 async function hasLineScript($: EngineInterface): Promise<boolean> {
   try {
     const sl = (await $.settings.read({ key: 'statusLine' })) as { command?: unknown } | undefined
-    return typeof sl?.command === 'string' && /cache-?meter/i.test(sl.command)
+    return typeof sl?.command === 'string' && /vitals|cache-?meter/i.test(sl.command)
   } catch {
     return false
   }
 }
 
 /**
- * Draws the status line where it is wanted: pinned under the prompt (`on`, or
- * `auto` wherever no terminal status line script draws it, the desktop app
- * among them), and written for the statusLine script when the account uses it.
+ * Draws the status line where it is wanted: written for the account's
+ * statusLine script (the terminal), and pinned under the prompt only when
+ * asked (`on`), since the band above the prompt already shows it.
  */
 async function refreshLine($: EngineInterface, cfg: Settings, mem: Mem): Promise<void> {
   try {
     const s = await snapshot($, cfg)
+    setLatest(shareOf(s, await $.session.id()))
     const text = lineOf(lineFields(s, cfg), lineData(s, cfg, await liveContext($)))
     const where = statusWhere(s, cfg)
-    let pin = where === 'on'
-    if (where === 'auto') {
-      const surfaces = await $.session.surfaces()
-      // Only a terminal whose statusLine runs the plugin's script draws the line already.
-      pin = !(mem.lineFile !== null && surfaces.length > 0 && surfaces.every(x => x === 'terminal'))
-    }
-    const shown = pin && text ? text : undefined
+    // auto: the terminal's statusLine script draws it; the band covers the rest, so nothing is pinned twice.
+    const shown = where === 'on' && text ? text : undefined
     if (shown !== mem.pinned) {
       $.ui.status(shown)
       mem.pinned = shown
@@ -301,7 +335,7 @@ async function sendAlfred($: EngineInterface, cfg: Settings, mem: Mem, force = f
   }
 }
 
-/** Keeps the fields chosen with /cache for this account and every session after. */
+/** Keeps the fields chosen with /vitals for this account and every session after. */
 async function setLayout($: EngineInterface, change: (l: Layout) => Layout): Promise<Layout> {
   let next = EMPTY_LAYOUT
   await update($, layout, l => (next = change(l)))
@@ -311,8 +345,108 @@ async function setLayout($: EngineInterface, change: (l: Layout) => Layout): Pro
   return next
 }
 
-function openPane($: EngineInterface) {
+async function openPane($: EngineInterface, to?: PaneTab) {
+  if (to) await update($, tab, () => to)
   return $.ui.open({ id: PANE, title: TITLE })
+}
+
+/** Reads the context as /context counts it (estimated locally, no request), at most once a minute unless forced. */
+async function refreshContext($: EngineInterface, force = false): Promise<void> {
+  try {
+    const now = await $.clock.now()
+    const had = await read($, ctxinfo)
+    if (!force && had && now - had.at < CTX_EVERY_MS) return
+    const u = await $.session.usage({ breakdown: 'summary' })
+    const b = u.context.breakdown
+    if (!b) return
+    const byServer = new Map<string, number>()
+    for (const t of b.mcpTools ?? []) byServer.set(t.serverName, (byServer.get(t.serverName) ?? 0) + t.tokens)
+    const info: ContextInfo = {
+      at: now,
+      total: b.totalTokens,
+      autoOn: b.isAutoCompactEnabled,
+      threshold: b.isAutoCompactEnabled ? (b.autoCompactThreshold ?? null) : null,
+      window: b.maxTokens || u.context.window,
+      categories: b.categories
+        .filter(c => c.tokens > 0 && !/^free space$/i.test(c.name))
+        .map(c => ({ name: c.name, tokens: c.tokens }))
+        .sort((x, y) => y.tokens - x.tokens),
+      mcp: [...byServer].map(([server, tokens]) => ({ server, tokens })).sort((x, y) => y.tokens - x.tokens).slice(0, 5),
+    }
+    await update($, ctxinfo, () => info)
+  } catch {
+    // no breakdown: the hint falls back to the context share alone
+  }
+}
+
+/** Adds one moment to the timeline, the newest kept. */
+async function remember($: EngineInterface, entry: TimelineEntry): Promise<void> {
+  await update($, timeline, list => [...list, entry].slice(-TIMELINE_MAX))
+}
+
+/** A message as one short line for the timeline. */
+const firstLine = (text: string): string => {
+  const one = text.replace(/\s+/g, ' ').trim()
+  return one.length > 70 ? `${one.slice(0, 69)}...` : one
+}
+
+/** Keeps when this session's last request started and how big it was, for when the session comes back. */
+async function keepLast($: EngineInterface, f: CacheFacts): Promise<void> {
+  try {
+    const id = await $.session.id()
+    const all = ((await $.store.get(SESSIONS_KEY)) ?? {}) as Record<string, CacheFacts>
+    all[id] = f
+    const kept = Object.entries(all).sort((a, b) => b[1].lastAt - a[1].lastAt).slice(0, SESSIONS_MAX)
+    await $.store.set(SESSIONS_KEY, Object.fromEntries(kept))
+  } catch {
+    // a session that comes back without it reads its cache as cold
+  }
+}
+
+/** The facts a returning session left behind, if any. */
+async function lastOf($: EngineInterface): Promise<CacheFacts | null> {
+  try {
+    const all = (await $.store.get(SESSIONS_KEY)) as Record<string, CacheFacts> | undefined
+    const f = all?.[await $.session.id()]
+    return f && typeof f.lastAt === 'number' && f.lastAt > 0 && typeof f.ctx === 'number' ? f : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Compacts now, the same call /compact makes; says how it went. The engine skips
+ * this plugin's own session.compact hook for its own call, so the reset is here.
+ */
+async function compactNow($: EngineInterface, mem?: Mem): Promise<string> {
+  if (mem) mem.compactPending = false
+  try {
+    const r = await $.session.compact()
+    if ('skip' in r && r.skip) return `Not compacted: ${r.skip}`
+    await update($, facts, () => null)
+    await update($, compacted, () => true)
+    await refreshContext($, true)
+    $.ui.invalidate('ui.render')
+    return 'Compacted.'
+  } catch (err) {
+    return `Not compacted: ${String(err instanceof Error ? err.message : err).slice(0, 200)}`
+  }
+}
+
+/** Switches Claude Code's own auto-compact, as /config does; `to` left out flips it. */
+async function setAutoCompact($: EngineInterface, to?: boolean): Promise<string> {
+  await refreshContext($, true)
+  const was = (await read($, ctxinfo))?.autoOn ?? null
+  const value = to ?? !(was ?? true)
+  try {
+    const r = await $.config.set({ key: 'autoCompact', value })
+    if ('deny' in r && r.deny) return `Auto-compact stays ${was === false ? 'off' : 'on'}: ${r.deny}`
+  } catch (err) {
+    return `Auto-compact not changed: ${String(err instanceof Error ? err.message : err).slice(0, 200)}`
+  }
+  await refreshContext($, true)
+  $.ui.invalidate('ui.render')
+  return `Auto-compact is ${value ? 'on' : 'off'}.`
 }
 
 /** Switches Keep Warm for this session; `to` left out flips it. */
@@ -396,7 +530,7 @@ async function keepWarmTick($: EngineInterface, cfg: Settings, run: PingRun): Pr
       lastPingAt: now,
       missed: s.missed + (isHit ? 0 : 1),
     }))
-    if (!isHit) $.ui.toast('Cache Meter: Keep Warm found the cache already expired and switched itself off.')
+    if (!isHit) $.ui.toast('Vitals: Keep Warm found the cache already expired and switched itself off.')
   } finally {
     run.busy = false
     $.ui.invalidate('ui.render')
@@ -437,22 +571,22 @@ async function seeMode($: EngineInterface, cfg: Settings, mem: Mem, mode: unknow
   }
 }
 
-/** Every field, and where each list stands now: for `/cache fields`. */
+/** Every field, and where each list stands now: for `/vitals fields`. */
 async function fieldsText($: EngineInterface, cfg: Settings): Promise<string> {
   const s = await snapshot($, cfg)
   const band = bandFields(s, cfg)
   const line = lineFields(s, cfg)
   return [
-    `Band:        ${band.join(', ')}${s.layout.band ? ' (set with /cache)' : ''}`,
-    `Status line: ${line.join(', ')}${s.layout.line ? ' (set with /cache)' : ''}, pinned ${statusWhere(s, cfg)}`,
+    `Band:        ${band.join(', ')}${s.layout.band ? ' (set with /vitals)' : ''}`,
+    `Status line: ${line.join(', ')}${s.layout.line ? ' (set with /vitals)' : ''}, pinned ${statusWhere(s, cfg)}`,
     '',
     ...FIELDS.map(f => `${f.padEnd(9)}${FIELD_INFO[f]}`),
     '',
-    '/cache band|line show|hide <fields>, /cache band|line set <fields in order>, /cache band|line reset, /cache line on|off|auto.',
+    '/vitals band|line show|hide <fields>, /vitals band|line set <fields in order>, /vitals band|line reset, /vitals line on|off|auto.',
   ].join('\n')
 }
 
-/** `/cache band ...` and `/cache line ...`: shows, hides, orders or resets the fields, or pins the line. */
+/** `/vitals band ...` and `/vitals line ...`: shows, hides, orders or resets the fields, or pins the line. */
 async function layoutCommand($: EngineInterface, cfg: Settings, mem: Mem, which: 'band' | 'line', verb: string, rest: string): Promise<string> {
   const name = which === 'band' ? 'The band' : 'The status line'
   const current = () => snapshot($, cfg).then(s => (which === 'band' ? bandFields(s, cfg) : lineFields(s, cfg)))
@@ -485,11 +619,81 @@ async function layoutCommand($: EngineInterface, cfg: Settings, mem: Mem, which:
   return [
     `${name} shows: ${(await current()).join(', ')}.`,
     ...(which === 'line' ? [`Now: ${text || '(nothing to show yet)'}`, `Pinned under the prompt: ${statusWhere(s, cfg)}.`] : []),
-    `/cache ${which} show|hide|set <fields>, /cache ${which} reset${which === 'line' ? ', /cache line on|off|auto' : ''}; /cache fields lists them all.`,
+    `/vitals ${which} show|hide|set <fields>, /vitals ${which} reset${which === 'line' ? ', /vitals line on|off|auto' : ''}; /vitals fields lists them all.`,
   ].join('\n')
 }
 
+/** `/vitals` (and the old `/cache`): the pane, a tab of it, or one of the switches. */
+async function answerCommand($: EngineInterface, e: CommandRunInput, cfg: Settings, mem: Mem) {
+  const [sub, arg, arg2] = (e.args ?? '').trim().toLowerCase().split(/\s+/)
+  if (sub === 'fields') return { text: await fieldsText($, cfg) }
+  if (sub === 'compact') {
+    // A command holds its turn, and compacting under it is refused: it runs right after, or at the turn's end.
+    mem.compactPending = true
+    try {
+      $.clock.after(300, () => {
+        if (mem.compactPending) void compactNow($, mem).then(t => $.ui.toast(t))
+      })
+    } catch {
+      // no timer here: the end of the turn runs it
+    }
+    return { text: 'Compacting as soon as this command is done.' }
+  }
+  if (sub === 'autocompact') return { text: await setAutoCompact($, arg === 'on' ? true : arg === 'off' ? false : undefined) }
+  const toTab = TABS.find(t => t.id === sub)?.id
+  if (toTab) {
+    const opened = await openPane($, toTab)
+    if (opened.isPlaced) return { text: `${TABS.find(t => t.id === toTab)!.label} is open in the side pane.` }
+  }
+  if (sub === 'band' || sub === 'line') {
+    const rest = (e.args ?? '').trim().split(/\s+/).slice(2).join(' ')
+    return { text: await layoutCommand($, cfg, mem, sub, arg ?? '', rest) }
+  }
+  if ((sub === 'warm' || sub === 'guard') && arg === 'repo') {
+    const name = sub === 'warm' ? 'Keep Warm' : 'The cold send guard'
+    const to = arg2 === 'on' ? true : arg2 === 'off' ? false : arg2 === 'reset' ? null : undefined
+    if (to === undefined) {
+      const s = await snapshot($, cfg)
+      const isOn = sub === 'warm' ? s.warmOn : s.guardMode !== 'off'
+      const kept = sub === 'warm' ? s.r.warm : s.r.guard
+      return { text: `${name} is ${isOn ? 'on' : 'off'} here. This repo ${kept === null ? 'follows the plugin settings' : `keeps it ${kept ? 'on' : 'off'}`}. /vitals ${sub} repo on, off or reset changes that.` }
+    }
+    const root = await setRepo($, sub, to)
+    if (!root) return { text: 'This session has no repo folder to keep it for.' }
+    if (to !== null) return { text: `${name} is ${to ? 'on' : 'off'} in every session in ${root}.` }
+    const s = await snapshot($, cfg)
+    const isOn = sub === 'warm' ? s.warmOn : s.guardMode !== 'off'
+    return { text: `${root} follows the plugin settings again: ${name} is ${isOn ? 'on' : 'off'}.` }
+  }
+  if (sub === 'warm') {
+    const isOn = await setKeepWarm($, cfg, arg === 'on' ? true : arg === 'off' ? false : undefined)
+    return { text: `Keep Warm is ${isOn ? 'on' : 'off'} for this session.` }
+  }
+  if (sub === 'guard') {
+    const isOn = await setGuard($, cfg, arg === 'on' ? true : arg === 'off' ? false : undefined)
+    return { text: `The cold send guard is ${isOn ? 'on' : 'off'} for this session.` }
+  }
+  const opened = await openPane($)
+  if (opened.isPlaced) return { text: 'Prompt Cache details are open in the side pane.' }
+  const s = await snapshot($, cfg)
+  const line = lineOf(lineFields(s, cfg), lineData(s, cfg, await liveContext($)))
+  const auto = s.info?.autoOn === false ? 'off' : s.autoAt != null ? `at ${s.autoAt}%` : 'on'
+  return {
+    text: [
+      `${'Status Line'.padEnd(14)}${line || 'Nothing to show yet'}`,
+      ...summary(s.view, s.st, s.ls, s.ttl, s.now, s.total, s.warmOn, s.w, s.switched, s.guardMode, s.warmFrom, s.guardFrom),
+      `${'Auto-Compact'.padEnd(14)}${auto}${s.advice ? `. Compact now: ${s.advice} (/vitals compact)` : ''}`,
+    ].join('\n'),
+  }
+}
+
 export const register: Register = (on, options) => {
+  // Other plugins read this session's figures from $.vitals (see types/index.d.ts).
+  on('engine.create', async ($, e, next) => {
+    const beneath: Omit<EngineInterface, 'vitals'> = await next(e)
+    return { ...beneath, vitals: meterApi() }
+  })
+
   const cfg: Settings = {
     ttl: options.ttl === '1h' || options.ttl === '5m' ? options.ttl : 'auto',
     // Both off unless switched on: in the settings for every project, a project's own settings, or per session.
@@ -506,9 +710,13 @@ export const register: Register = (on, options) => {
       home: typeof options.alfredHome === 'string' && options.alfredHome.trim() ? options.alfredHome.trim() : '~/Development/alfred-app',
       url: typeof options.alfredUrl === 'string' && /^https?:\/\//.test(options.alfredUrl.trim()) ? options.alfredUrl.trim() : 'http://127.0.0.1:8765',
     },
+    compact: {
+      on: options.compactHint !== 'off',
+      coldAt: [30, 40, 50, 60, 70].includes(Number(options.compactAt)) ? Number(options.compactAt) : 50,
+    },
   }
   const run: PingRun = { busy: false }
-  const mem: Mem = { pinned: undefined, written: undefined, lineFile: null, alfredAt: 0, token: null }
+  const mem: Mem = { pinned: undefined, written: undefined, lineFile: null, alfredAt: 0, token: null, tools: 0, compactPending: false }
   /** The cold send the person was already told about: its resend goes through. */
   let ackedAt = 0
 
@@ -525,6 +733,12 @@ export const register: Register = (on, options) => {
       if (Array.isArray(known)) await update($, limits, () => cleanLimits(known))
     }
     await update($, sessionUsd, () => u.cost?.usd ?? null)
+    // A session that comes back (a restart of the app) knows when its last request started.
+    if (!(await read($, facts))) {
+      const kept = await lastOf($)
+      if (kept) await update($, facts, () => kept)
+    }
+    void refreshContext($, true)
     const root = repoRoot(await $.session.root())
     const kept = (await $.store.get(repoKey(root))) as { guard?: unknown; warm?: unknown } | undefined
     await update($, repo, () => ({ root, guard: flag(kept?.guard), warm: flag(kept?.warm) }))
@@ -537,12 +751,18 @@ export const register: Register = (on, options) => {
     }))
     if (await hasLineScript($)) {
       const tmp = ((await $.env.get('TMPDIR')) || '/tmp').replace(/\/+$/, '')
-      mem.lineFile = `${tmp}/cache-meter/${await $.session.id()}.line`
+      mem.lineFile = `${tmp}/vitals/${await $.session.id()}.line`
     }
     await $.command.register({
+      name: 'vitals',
+      description: 'Vitals: prompt cache, context and compaction, usage limits, account, timeline; Keep Warm, the cold send guard and which fields show',
+      argumentHint: ARGS,
+    })
+    // The name it had as Cache Meter keeps working.
+    await $.command.register({
       name: 'cache',
-      description: 'Cache Meter: prompt cache, usage limits, account and the status line; Keep Warm, the cold send guard and which fields show',
-      argumentHint: '[warm|guard] [on|off] | [warm|guard] repo [on|off|reset] | [band|line] [show|hide|set|reset] [fields] | line [on|off|auto] | fields',
+      description: 'Vitals (the old /cache): the same as /vitals',
+      argumentHint: ARGS,
     })
     $.clock.every(TICK_MS, () => {
       $.ui.invalidate('ui.render')
@@ -576,6 +796,8 @@ export const register: Register = (on, options) => {
   // The permission mode rides on every classic hook input: the latest one wins.
   on('classic.UserPromptSubmit', async ($, e, next) => {
     await seeMode($, cfg, mem, e.permission_mode)
+    mem.tools = 0
+    if (!e.source || e.source === 'user') await remember($, { at: await $.clock.now(), who: 'you', text: firstLine(e.prompt), ms: null, tools: null })
     return next(e)
   }).catch(($, e, next) => next(e)) // reading the mode never holds up a prompt
   on('classic.Stop', async ($, e, next) => {
@@ -596,10 +818,13 @@ export const register: Register = (on, options) => {
     ackedAt = 0
     if (e.source === 'clear') {
       await update($, facts, () => null)
+      await update($, compacted, () => false)
+      await update($, timeline, () => [])
       await update($, stats, () => EMPTY_STATS)
       await update($, engine, g => ({ ...g, switchedTo: null }))
     } else if (e.source === 'compact') {
       await update($, facts, () => null)
+      await update($, compacted, () => true)
       await update($, engine, g => ({ ...g, switchedTo: null }))
     } else if ((e.source === 'resume' || e.source === 'fork') && typeof e.seconds_since_last_response === 'number') {
       const now = await $.clock.now()
@@ -627,7 +852,11 @@ export const register: Register = (on, options) => {
   on('session.compact', async ($, e, next) => {
     const r = await next(e)
     // The summary is the next request's whole prefix: writing it is no cold write.
-    if (!e.agentId && !('skip' in r && r.skip)) await update($, facts, () => null)
+    if (!e.agentId && !('skip' in r && r.skip)) {
+      await update($, facts, () => null)
+      await update($, compacted, () => true)
+      void refreshContext($, true)
+    }
     return r
   }).catch(($, e, next) => next(e)) // a failed reset never holds up a compaction
 
@@ -661,15 +890,27 @@ export const register: Register = (on, options) => {
     // The next request re-sends this prompt and this answer, on this model.
     const known = (await read($, facts))?.window
     const window = known || (await $.session.usage()).context.window || 0
-    await update($, facts, () => ({ lastAt: startedAt, ctx: prompt + u.output_tokens, window, model, effort: e.effort ?? null }))
+    const kept: CacheFacts = { lastAt: startedAt, ctx: prompt + u.output_tokens, window, model, effort: e.effort ?? null }
+    await update($, facts, () => kept)
+    await update($, compacted, () => false)
+    void keepLast($, kept)
     await update($, engine, g => (g.switchedTo ? { ...g, switchedTo: null } : g))
     await update($, warm, w => ({ ...w, since: startedAt, streak: 0 }))
     return r
   })
 
+  // Tools the main thread ran this turn, for the timeline.
+  on('tool.call', async ($, e, next) => {
+    if (!(e as { agentId?: string }).agentId) mem.tools += 1
+    return next(e)
+  }).catch(($, e, next) => next(e)) // counting never holds up a tool
+
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
     if (e.agentId) return r
+    await remember($, { at: await $.clock.now(), who: 'claude', text: e.isAborted ? 'Stopped' : null, ms: e.durationMs, tools: mem.tools })
+    if (mem.compactPending) $.ui.toast(await compactNow($, mem))
+    void refreshContext($)
     const u = await $.session.usage()
     if (u.context.window) {
       const window = u.context.window
@@ -702,53 +943,18 @@ export const register: Register = (on, options) => {
       ? `The model changed to ${nameOf(view)}, so the prompt cache starts empty.`
       : `The prompt cache went cold ${dur(view.idleMs - TTL_MS[ttl])} ago.`
     const price = view.cold != null ? ` for ${usd(view.cold)}${view.warm != null && !switched ? ` (a warm read would be ${usd(view.warm)})` : ''}` : ''
-    const text = `Cache Meter: ${why} This message re-writes ~${tok(view.ctx)} tokens on ${nameOf(view)}${price}.`
+    const text = `Vitals: ${why} This message re-writes ~${tok(view.ctx)} tokens on ${nameOf(view)}${price}.`
     if (guard === 'warn' || ackedAt === f.lastAt) {
       if (guard === 'warn') $.ui.log(text)
       ackedAt = 0
       return next(e)
     }
     ackedAt = f.lastAt
-    return { drop: `${text} Send it again to go ahead, or /clear and start from a short summary. /cache guard off stops these holds.` }
+    return { drop: `${text} Send it again to go ahead, or /clear and start from a short summary. /vitals guard off stops these holds.` }
   }).catch(($, e, next) => next(e)) // a meter that fails never blocks a message
 
-  on('command.run', { command: 'cache' }, async ($, e) => {
-    const [sub, arg, arg2] = (e.args ?? '').trim().toLowerCase().split(/\s+/)
-    if (sub === 'fields') return { text: await fieldsText($, cfg) }
-    if (sub === 'band' || sub === 'line') {
-      const rest = (e.args ?? '').trim().split(/\s+/).slice(2).join(' ')
-      return { text: await layoutCommand($, cfg, mem, sub, arg ?? '', rest) }
-    }
-    if ((sub === 'warm' || sub === 'guard') && arg === 'repo') {
-      const name = sub === 'warm' ? 'Keep Warm' : 'The cold send guard'
-      const to = arg2 === 'on' ? true : arg2 === 'off' ? false : arg2 === 'reset' ? null : undefined
-      if (to === undefined) {
-        const s = await snapshot($, cfg)
-        const isOn = sub === 'warm' ? s.warmOn : s.guardMode !== 'off'
-        const kept = sub === 'warm' ? s.r.warm : s.r.guard
-        return { text: `${name} is ${isOn ? 'on' : 'off'} here. This repo ${kept === null ? 'follows the plugin settings' : `keeps it ${kept ? 'on' : 'off'}`}. /cache ${sub} repo on, off or reset changes that.` }
-      }
-      const root = await setRepo($, sub, to)
-      if (!root) return { text: 'This session has no repo folder to keep it for.' }
-      if (to !== null) return { text: `${name} is ${to ? 'on' : 'off'} in every session in ${root}.` }
-      const s = await snapshot($, cfg)
-      const isOn = sub === 'warm' ? s.warmOn : s.guardMode !== 'off'
-      return { text: `${root} follows the plugin settings again: ${name} is ${isOn ? 'on' : 'off'}.` }
-    }
-    if (sub === 'warm') {
-      const isOn = await setKeepWarm($, cfg, arg === 'on' ? true : arg === 'off' ? false : undefined)
-      return { text: `Keep Warm is ${isOn ? 'on' : 'off'} for this session.` }
-    }
-    if (sub === 'guard') {
-      const isOn = await setGuard($, cfg, arg === 'on' ? true : arg === 'off' ? false : undefined)
-      return { text: `The cold send guard is ${isOn ? 'on' : 'off'} for this session.` }
-    }
-    const opened = await openPane($)
-    if (opened.isPlaced) return { text: 'Prompt Cache details are open in the side pane.' }
-    const s = await snapshot($, cfg)
-    const line = lineOf(lineFields(s, cfg), lineData(s, cfg, await liveContext($)))
-    return { text: [`${'Status Line'.padEnd(14)}${line || 'Nothing to show yet'}`, ...summary(s.view, s.st, s.ls, s.ttl, s.now, s.total, s.warmOn, s.w, s.switched, s.guardMode, s.warmFrom, s.guardFrom)].join('\n') }
-  })
+  on('command.run', { command: 'vitals' }, ($, e) => answerCommand($, e, cfg, mem))
+  on('command.run', { command: 'cache' }, ($, e) => answerCommand($, e, cfg, mem))
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const rest = await next(e)
@@ -774,7 +980,7 @@ export const register: Register = (on, options) => {
     const { shown, withReserve } = fit(segs, columns - 2, DETAILS.length + 2)
 
     const row = (
-      <Box key="cache-meter" flexDirection="row" paddingX={1}>
+      <Box key="vitals" flexDirection="row" paddingX={1}>
         {shown.map((s, i) => (
           <Box key={s.key} flexDirection="row" flexShrink={0}>
             {i > 0 ? <Text dimColor>{SEP}</Text> : null}
@@ -846,12 +1052,13 @@ export const register: Register = (on, options) => {
       </Row>
     )
 
-    const cards: RenderChildren[] = []
+    const byTab: Record<PaneTab, RenderChildren[]> = { now: [], context: [], cost: [], timeline: [], settings: [] }
+    const put = (t: PaneTab, card: RenderChildren) => byTab[t].push(card)
     const effort = effortLabel(view.effort)
     const where = statusWhere(snap, cfg)
 
-    cards.push(
-      <Card k="account" title="Account" note={<Text dimColor>{`[${me.label}]`}</Text>} first>
+    put('now',
+      <Card k="account" title="Account" note={<Text dimColor>{me.label}</Text>} first>
         {me.email ? <Row k="acct-email" label="E-mail"><Text wrap="truncate">{me.email}</Text></Row> : null}
         {d.model ? (
           <Row k="acct-model" label="Model">
@@ -868,26 +1075,38 @@ export const register: Register = (on, options) => {
             <Text><Text>{me.dir}</Text>{me.branch ? <Text dimColor>{`${dot}${me.branch}`}</Text> : null}</Text>
           </Row>
         ) : null}
-        <Row k="acct-line" label="Status Line">
-          <Text>{lineText || 'Nothing to show yet'}</Text>
-          <Text dimColor size="footnote">
-            {where === 'off' ? 'Not pinned under the prompt' : where === 'on' ? 'Pinned under the prompt' : 'Pinned where no terminal statusLine script draws it'}
-          </Text>
-        </Row>
-        {cfg.alfred.on ? (
-          <Row k="acct-alfred" label="Alfred">
-            <Text dimColor>
-              {sent.at === 0 ? 'Nothing sent yet' : sent.ok ? `Usage sent ${dur(now - sent.at)} ago${dot}${sent.sent} this session` : `Not sent: ${sent.error ?? `HTTP ${sent.status}`}`}
-            </Text>
-          </Row>
-        ) : null}
       </Card>,
     )
 
-    cards.push(
-      <Card k="cache" title={TITLE} note={<Text dimColor>{`TTL ${ttl}`}</Text>}>
+    put('settings',
+      <Card k="line" title="Status Line" note={<Text dimColor>{where === 'on' ? 'Pinned' : where === 'off' ? 'Off' : 'Terminal'}</Text>} first>
+        <Row k="line-text" label="Reads">
+          <Text>{lineText || 'Nothing to show yet'}</Text>
+        </Row>
+        <Row k="line-where" label="Where">
+          <Text dimColor>
+            {where === 'off' ? 'Nowhere' : where === 'on' ? 'Pinned under the prompt, and the terminal statusLine script' : 'The terminal statusLine script; the band covers the desktop app'}
+          </Text>
+        </Row>
+        <Box marginTop={1}><Text dimColor size="footnote">/vitals line show, hide or set picks its fields, /vitals band the same for the band. /vitals line on pins it under the prompt too.</Text></Box>
+      </Card>,
+    )
+    if (cfg.alfred.on) {
+      put('settings',
+        <Card k="alfred" title="Alfred">
+          <Row k="alfred-sent" label="Usage">
+            <Text dimColor>
+              {sent.at === 0 ? 'Nothing sent yet' : sent.ok ? `Sent ${dur(now - sent.at)} ago${dot}${sent.sent} this session` : `Not sent: ${sent.error ?? `HTTP ${sent.status}`}`}
+            </Text>
+          </Row>
+        </Card>,
+      )
+    }
+
+    put('now',
+      <Card k="cache" title="Prompt Cache" note={<Text dimColor>{`TTL ${ttl}`}</Text>}>
         {view.state === 'none' ? (
-          <Row k="state" label="State"><Text dimColor>{st.requests ? 'Known after the next reply' : 'No request yet'}</Text></Row>
+          <Row k="state" label="State"><Text dimColor>No request yet</Text></Row>
         ) : (
           [
             <Row k="state" label="State">
@@ -897,7 +1116,11 @@ export const register: Register = (on, options) => {
                   {switched
                     ? `${dot}Model changed, the next message writes the cache anew`
                     : cold
-                      ? `${dot}Idle ${dur(view.idleMs)}`
+                      ? view.why === 'compacted'
+                        ? `${dot}Compacted, the next message writes the summary`
+                        : view.why === 'unknown'
+                          ? `${dot}After a break, idle time not known`
+                          : `${dot}Idle ${dur(view.idleMs)}`
                       : `${dot}${dur(view.leftMs)} left${dot}Idle ${dur(view.idleMs)}`}
                 </Text>
               </Text>
@@ -925,7 +1148,7 @@ export const register: Register = (on, options) => {
 
     if (view.state !== 'none' && view.price) {
       const price = view.price
-      cards.push(
+      put('now',
         <Card k="next" title="Next Message" note={<Text dimColor>Re-sends the whole context</Text>}>
           <Row k="warm" label="While Warm">
             <Text>
@@ -952,7 +1175,7 @@ export const register: Register = (on, options) => {
     const pingIn = !switched && (view.state === 'warm' || view.state === 'soon') ? Math.max(0, view.leftMs - WARM_LEAD_MS[ttl]) : null
     const windowLeft = w.since ? cfg.warmForMs - (now - w.since) : cfg.warmForMs
     const pingUsd = warmUsd(view.price, view.ctx)
-    cards.push(
+    put('settings',
       <Card
         k="keep-warm"
         title="Keep Warm"
@@ -1000,7 +1223,7 @@ export const register: Register = (on, options) => {
     )
 
     const guardOn = guardMode !== 'off'
-    cards.push(
+    put('settings',
       <Card
         k="guard"
         title="Cold Send Guard"
@@ -1031,8 +1254,8 @@ export const register: Register = (on, options) => {
       </Card>,
     )
 
-    cards.push(
-      <Card k="session" title="This Session" note={<Text dimColor>Main thread</Text>}>
+    put('cost',
+      <Card k="session" title="This Session" first note={<Text dimColor>Main thread</Text>}>
         {st.requests === 0 ? (
           <Row k="none" label="Requests"><Text dimColor>None yet</Text></Row>
         ) : (
@@ -1078,7 +1301,7 @@ export const register: Register = (on, options) => {
     )
 
     if (ls.length > 0) {
-      cards.push(
+      put('now',
         <Card k="limits" title="Usage Limits">
           {ls.map(l => {
             const used = Math.round(l.percentUsed)
@@ -1101,7 +1324,7 @@ export const register: Register = (on, options) => {
       )
     }
 
-    cards.push(
+    put('cost',
       <Box key="foot" marginTop={1} paddingX={1}>
         <Text dimColor size="footnote">
           {ls.length > 0
@@ -1111,7 +1334,126 @@ export const register: Register = (on, options) => {
       </Box>,
     )
 
-    return <Box flexDirection="column">{cards}</Box>
+    // Context: how full, what fills it, when auto-compact runs and whether to compact now.
+    const info = snap.info
+    const share = snap.share
+    const autoAt = snap.autoAt
+    const ctxTokens = view.state !== 'none' ? view.ctx : (snap.live.tokens ?? 0)
+    const ctxWindow = (view.state !== 'none' && view.window) || snap.live.window || info?.window || 0
+    put('context',
+      <Card
+        k="ctx"
+        title="Context"
+        note={<Button key="compact-now" label="Compact Now" variant={snap.advice ? 'primary' : 'secondary'} onPress={() => void compactNow($, mem)} />}
+        first
+      >
+        <Row k="ctx-used" label="Used">
+          <Text>
+            <Text tabular bold>{share != null ? `${share}%` : '-'}</Text>
+            <Text dimColor>{`${dot}${tok(ctxTokens)} of ${ctxWindow ? tok(ctxWindow) : '?'} tokens`}</Text>
+          </Text>
+          <Meter share={share != null ? share / 100 : 0} color={autoAt != null && share != null && share >= autoAt - 10 ? 'warning' : undefined} />
+        </Row>
+        <Row k="ctx-auto" label="Auto-Compact">
+          <Box flexDirection="row" columnGap={1} alignItems="center">
+            <Text>
+              <Text bold color={info?.autoOn === false ? 'warning' : undefined}>{info?.autoOn === false ? 'Off' : 'On'}</Text>
+              {autoAt != null ? <Text dimColor>{`${dot}Runs at ${autoAt}%${share != null && autoAt > share ? `, ${autoAt - share} points to go` : ''}`}</Text> : null}
+            </Text>
+            <Button key="auto-toggle" label={info?.autoOn === false ? 'Turn On' : 'Turn Off'} variant="secondary" onPress={() => void setAutoCompact($)} />
+          </Box>
+        </Row>
+        <Row k="ctx-advice" label="Advice">
+          <Text color={snap.advice ? 'warning' : undefined} dimColor={!snap.advice}>
+            {snap.advice
+              ? `Compact now: ${snap.advice}.`
+              : !cfg.compact.on
+                ? 'The compact hint is off in the settings.'
+                : 'No need yet.'}
+          </Text>
+        </Row>
+        <Box marginTop={1}>
+          <Text dimColor size="footnote">
+            {`Compacting costs about one pass over the context. Best at a break of your choosing: when the cache has gone cold and the context is over ${cfg.compact.coldAt}% (the next message pays that pass anyway), or before auto-compact cuts in mid-task.`}
+          </Text>
+        </Box>
+      </Card>,
+    )
+    if (info && info.categories.length > 0) {
+      const top = info.categories[0]!.tokens
+      put('context',
+        <Card k="ctx-parts" title="What Fills It" note={<Text dimColor>Estimated, as /context</Text>}>
+          {info.categories.slice(0, 8).map(c => (
+            <Row k={`cat-${c.name}`} label={c.name}>
+              <Text tabular>{tok(c.tokens)}</Text>
+              <Meter share={top ? c.tokens / top : 0} />
+            </Row>
+          ))}
+        </Card>,
+      )
+    }
+    if (info && info.mcp.length > 0) {
+      put('context',
+        <Card k="ctx-mcp" title="Heaviest MCP Servers" note={<Text dimColor>Tool schemas</Text>}>
+          {info.mcp.map(m => (
+            <Row k={`mcp-${m.server}`} label={m.server}><Text tabular>{tok(m.tokens)}</Text></Row>
+          ))}
+        </Card>,
+      )
+    }
+    put('settings',
+      <Card k="compact-hint" title="Compact Hint" note={<Text dimColor>{cfg.compact.on ? 'On' : 'Off'}</Text>}>
+        <Row k="hint-cold" label="Cold Cache">
+          <Text dimColor>{`From ${cfg.compact.coldAt}% of the window`}</Text>
+        </Row>
+        <Row k="hint-auto" label="Auto-Compact">
+          <Text dimColor>Within 10 points of its threshold, or from 80% when it is off</Text>
+        </Row>
+        <Box marginTop={1}><Text dimColor size="footnote">compactHint and compactAt in /plugin configure change it.</Text></Box>
+      </Card>,
+    )
+
+    // Timeline: when each message went and how long each reply took.
+    const tl = await read($, timeline)
+    put('timeline',
+      <Card k="timeline" title="Timeline" note={<Text dimColor>{`${tl.filter(x => x.who === 'you').length} messages`}</Text>} first>
+        {tl.length === 0 ? (
+          <Text dimColor>Nothing yet. Each message you send and each reply shows here with its time.</Text>
+        ) : (
+          tl.slice(-20).flatMap((x, i, list) => {
+            const prev = list[i - 1]
+            const gap = prev && x.who === 'you' ? x.at - prev.at : 0
+            const ttlMs = TTL_MS[ttl]
+            const rows: RenderChildren[] = []
+            if (gap > ttlMs) rows.push(<Text key={`gap-${x.at}`} color="error" size="footnote">{`${dur(gap)} idle, the cache went cold`}</Text>)
+            const clock = clockOf(new Date(x.at).toISOString(), x.at, me.tzMin)
+            rows.push(
+              <Row k={`tl-${x.at}-${x.who}`} label={clock}>
+                {x.who === 'you' ? (
+                  <Text wrap="truncate"><Text bold>You</Text><Text dimColor>{x.text ? `${dot}${x.text}` : ''}</Text></Text>
+                ) : (
+                  <Text>
+                    <Text bold>Claude</Text>
+                    <Text dimColor>{`${dot}${x.text ?? (x.ms != null ? dur(x.ms) : '')}${x.tools ? `${dot}${x.tools} tools` : ''}`}</Text>
+                  </Text>
+                )}
+              </Row>,
+            )
+            return rows
+          })
+        )}
+      </Card>,
+    )
+
+    const current = await read($, tab)
+    const tabs = (
+      <Box key="tabs" flexDirection="row" columnGap={1} marginBottom={1} flexWrap="wrap">
+        {TABS.map(t => (
+          <Button key={`tab-${t.id}`} label={t.label} variant={t.id === current ? 'primary' : 'secondary'} onPress={() => void update($, tab, () => t.id)} />
+        ))}
+      </Box>
+    )
+    return <Box flexDirection="column">{tabs}{byTab[current]}</Box>
   })
 }
 
@@ -1125,14 +1467,15 @@ const summary = (
   const effort = effortLabel(v.effort)
   if (v.state === 'none') line('Prompt Cache', st.requests ? 'Known after the next reply' : 'No request yet')
   else {
-    const state = switched ? 'Cold, the model changed' : v.state === 'cold' ? `Cold, idle ${dur(v.idleMs)}` : `Warm, ${dur(v.leftMs)} left`
+    const idle = v.why === 'compacted' ? 'compacted' : v.why === 'unknown' ? 'after a break' : `idle ${dur(v.idleMs)}`
+    const state = switched ? 'Cold, the model changed' : v.state === 'cold' ? `Cold, ${idle}` : `Warm, ${dur(v.leftMs)} left`
     line('Prompt Cache', `${state} (TTL ${ttl})`)
     line('Context', `${tok(v.ctx)} tokens${v.window ? `, ${pct(v.ctx, v.window)}% of ${tok(v.window)}` : ''}`)
     line('Model', `${nameOf(v)}${effort ? `, effort ${effort}` : ''}${v.price ? '' : ', not in the price table'}`)
     if (v.price) line('Next Message', `${usd(v.warm)} warm, ${usd(v.cold)} cold`)
   }
-  line('Keep Warm', `${warmOn ? 'On' : 'Off'} (${LEVEL_NAME[warmFrom]}), ${w.pings} pings (${usd(w.usd)}). /cache warm switches it.`)
-  line('Cold Guard', `${guardMode === 'off' ? 'Off' : guardMode === 'warn' ? 'On, only shows the price' : 'On, holds the message once'} (${LEVEL_NAME[guardFrom]}). /cache guard switches it.`)
+  line('Keep Warm', `${warmOn ? 'On' : 'Off'} (${LEVEL_NAME[warmFrom]}), ${w.pings} pings (${usd(w.usd)}). /vitals warm switches it.`)
+  line('Cold Guard', `${guardMode === 'off' ? 'Off' : guardMode === 'warn' ? 'On, only shows the price' : 'On, holds the message once'} (${LEVEL_NAME[guardFrom]}). /vitals guard switches it.`)
   const inputs = st.read + st.write + st.uncached
   if (st.requests && inputs) {
     line('Cache Hit', `${pctDown(st.read, inputs)}% over ${st.requests} requests, saved ${usd(st.savedUsd)}, ${st.coldWrites} cold writes (${usd(st.coldUsd)})`)

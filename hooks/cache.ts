@@ -158,6 +158,8 @@ export type CacheView = {
   price: Price | null
   warm: number | null
   cold: number | null
+  /** Why a cold cache's idle time is not known: the context was compacted, or the session came back without it. */
+  why?: 'compacted' | 'unknown'
 }
 
 /** Everything the band and the pane draw about the cache, at `now`. */

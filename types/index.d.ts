@@ -77,7 +77,7 @@ export type Who = {
 }
 
 /**
- * Fields chosen with /cache, over the plugin settings; null follows the
+ * Fields chosen with /vitals, over the plugin settings; null follows the
  * settings. `status` is where the status line is pinned.
  */
 export type Layout = { band: string[] | null; line: string[] | null; status: 'auto' | 'on' | 'off' | null }
@@ -85,9 +85,78 @@ export type Layout = { band: string[] | null; line: string[] | null; status: 'au
 /** The last usage reading sent to the local Alfred engine: when, and how it went. */
 export type AlfredSend = { at: number; ok: boolean; status: number; error: string | null; sent: number }
 
+/** One moment of the session's timeline: a message sent, or a reply with how long it took and how many tools it ran. */
+export type TimelineEntry = { at: number; who: 'you' | 'claude'; text: string | null; ms: number | null; tools: number | null }
+
+/**
+ * The context as /context counts it, read now and then: the auto-compact
+ * threshold in tokens (null when auto-compact is off or unknown), whether it
+ * is on, the window, the largest categories and the heaviest MCP servers.
+ */
+export type ContextInfo = {
+  at: number
+  /** Every category's tokens, as /context totals them. */
+  total: number
+  autoOn: boolean | null
+  threshold: number | null
+  window: number
+  categories: Array<{ name: string; tokens: number }>
+  mcp: Array<{ server: string; tokens: number }>
+}
+
+/** The pane's open tab. */
+export type PaneTab = 'now' | 'context' | 'cost' | 'timeline' | 'settings'
+
+/** One usage window of the account, as the API reports it. */
+export type VitalsLimit = { kind: string; percentUsed: number; resetsAt: string | null }
+
+/**
+ * What `$.vitals.snapshot()` gives another plugin: this session's account,
+ * cache, context and limits as the plugin last drew them. Never the e-mail, never
+ * anything said in the session. Times are Unix milliseconds, money is USD at API list prices.
+ */
+export type VitalsSnapshot = {
+  at: number
+  sessionId: string
+  account: { label: string; configDir: string }
+  model: string | null
+  effort: string | number | null
+  cache: {
+    state: 'none' | 'warm' | 'soon' | 'cold'
+    leftMs: number
+    idleMs: number
+    /** Why a cold cache's idle time is not known. */
+    why: 'compacted' | 'unknown' | null
+    ttl: '5m' | '1h'
+    nextUsd: number | null
+    coldUsd: number | null
+  }
+  context: {
+    tokens: number | null
+    window: number | null
+    percent: number | null
+    autoCompactOn: boolean | null
+    autoCompactAtPercent: number | null
+    /** Why compacting now is worth it, or null. */
+    advice: string | null
+  }
+  limits: VitalsLimit[]
+  session: { requests: number; hitPercent: number | null; usd: number | null }
+}
+
+/** The data other plugins read: list this plugin under `dependencies` and call `$.vitals.snapshot()`. */
+export type Vitals = {
+  /** The latest reading, refreshed every 15 seconds and after each reply; null before the first. */
+  snapshot: () => Promise<VitalsSnapshot | null>
+}
+
 declare module 'claude-code' {
+  interface EngineInterface {
+    vitals: Vitals
+  }
+
   interface PluginState {
-    'cache-meter': {
+    'vitals': {
       facts: Shaped<CacheFacts | null>
       limits: Shaped<Limit[]>
       stats: Shaped<Stats>
@@ -100,6 +169,11 @@ declare module 'claude-code' {
       who: Shaped<Who>
       layout: Shaped<Layout>
       alfred: Shaped<AlfredSend>
+      /** The context was compacted and no request has written its cache yet. */
+      compacted: Shaped<boolean>
+      timeline: Shaped<TimelineEntry[]>
+      ctxinfo: Shaped<ContextInfo | null>
+      tab: Shaped<PaneTab>
     }
   }
 }

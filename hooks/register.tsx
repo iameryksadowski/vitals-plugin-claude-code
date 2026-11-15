@@ -1,9 +1,14 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { CacheFacts, EngineCache, KeepWarm, Limit, RepoPrefs, Stats } from '../types'
+import type { AlfredSend, CacheFacts, EngineCache, KeepWarm, Layout, Limit, RepoPrefs, Stats, Who } from '../types'
+import { ALFRED_EVERY_MS, alfredBody, homePath } from './alfred'
 import { SEP, fit, spaced } from './band'
 import type { Segment } from './band'
+import {
+  BAND_DEFAULT, FIELDS, FIELD_INFO, LINE_DEFAULT, PRIO, accountOf, fieldsOr, lineOf, loginFileOf, parseFields, piecesOf,
+} from './fields'
+import type { Field, LineData, ResetStyle } from './fields'
 import {
   COLD_WRITE_MIN, COLD_WRITE_SHARE, GUARD_MIN_TOKENS, LIMIT_NAME, TONE, TTL_MS, WARM_FOR_MS, WARM_LEAD_MS,
   dur, effortLabel, limitTone, modelName, pct, pctDown, priceOf, requestUsd, resetIn, sortLimits, tok, usd, viewOf, warmUsd, writeRate,
@@ -37,6 +42,16 @@ const engine = atom({ plugin: 'cache-meter', key: 'engine' } as const, EMPTY_ENG
 const holds = atom({ plugin: 'cache-meter', key: 'guard' } as const, null as boolean | null, { shape: 'guard-1' })
 const EMPTY_REPO: RepoPrefs = { root: null, guard: null, warm: null }
 const repo = atom({ plugin: 'cache-meter', key: 'repo' } as const, EMPTY_REPO, { shape: 'repo-1' })
+const EMPTY_WHO: Who = { label: 'A', configDir: '', email: null, mode: null, style: null, dir: null, branch: null, effort: null, model: null, tzMin: 0 }
+const who = atom({ plugin: 'cache-meter', key: 'who' } as const, EMPTY_WHO, { shape: 'who-1' })
+const EMPTY_LAYOUT: Layout = { band: null, line: null, status: null }
+const layout = atom({ plugin: 'cache-meter', key: 'layout' } as const, EMPTY_LAYOUT, { shape: 'layout-1' })
+const EMPTY_ALFRED: AlfredSend = { at: 0, ok: false, status: 0, error: null, sent: 0 }
+const alfred = atom({ plugin: 'cache-meter', key: 'alfred' } as const, EMPTY_ALFRED, { shape: 'alfred-1' })
+/** Where /cache keeps the fields chosen for this account, over the plugin settings. */
+const LAYOUT_KEY = 'layout'
+/** The account's last known usage limits, for a new session before its first reply. */
+const LIMITS_KEY = 'limits'
 
 /** Plugin settings are read from the user's settings alone, so a repo's own choice is kept in the plugin's store. */
 const repoKey = (root: string) => `repo:${root}`
@@ -59,7 +74,21 @@ const cleanLimits = (list: readonly Limit[]): Limit[] =>
 type TtlOption = Ttl | 'auto'
 type GuardMode = 'confirm' | 'warn' | 'off'
 /** What register reads from the settings, handed to the top-level helpers. */
-type Settings = { ttl: TtlOption; guard: GuardMode; warmDefault: boolean; warmForMs: number }
+type StatusWhere = 'auto' | 'on' | 'off'
+type Settings = {
+  ttl: TtlOption
+  guard: GuardMode
+  warmDefault: boolean
+  warmForMs: number
+  band: Field[]
+  line: Field[]
+  status: StatusWhere
+  reset: ResetStyle
+  labels: string
+  alfred: { on: boolean; home: string; url: string }
+}
+/** What the module keeps between calls in this load: what is pinned and written, Alfred's last send. */
+type Mem = { pinned: string | undefined; written: string | undefined; lineFile: string | null; alfredAt: number; token: string | null }
 /** Keep Warm's one ping in flight, so ticks never overlap one. */
 type PingRun = { busy: boolean }
 
@@ -110,7 +139,176 @@ async function snapshot($: EngineInterface, cfg: Settings) {
     warmFrom: levelOf(w.on, r.warm),
     guardMode: guardModeOf(h ?? r.guard, cfg),
     guardFrom: levelOf(h, r.guard),
+    who: await read($, who),
+    layout: await read($, layout),
+    sent: await read($, alfred),
   }
+}
+
+type Snapshot = Awaited<ReturnType<typeof snapshot>>
+
+/** The live context window as the engine has it; empty where it cannot say. */
+async function liveContext($: EngineInterface): Promise<LineData['context']> {
+  try {
+    return (await $.session.usage()).context
+  } catch {
+    return { window: 0 }
+  }
+}
+
+/** The fields the band and the status line show: chosen with /cache, else the plugin settings. */
+const bandFields = (s: Snapshot, cfg: Settings): Field[] => fieldsOr(s.layout.band?.join(','), cfg.band)
+const lineFields = (s: Snapshot, cfg: Settings): Field[] => fieldsOr(s.layout.line?.join(','), cfg.line)
+const statusWhere = (s: Snapshot, cfg: Settings): StatusWhere => s.layout.status ?? cfg.status
+
+/** Everything a field reads, from one snapshot. */
+const lineData = (s: Snapshot, cfg: Settings, context: LineData['context']): LineData => {
+  const inputs = s.st.read + s.st.write + s.st.uncached
+  return {
+    label: s.who.label,
+    email: s.who.email,
+    mode: s.who.mode,
+    style: s.who.style,
+    dir: s.who.dir,
+    branch: s.who.branch,
+    model: s.view.state !== 'none' ? nameOf(s.view) : (modelName(s.who.model) ?? s.who.model),
+    effort: s.view.effort ?? s.who.effort,
+    view: s.view,
+    switched: s.switched !== null,
+    warmOn: s.warmOn,
+    requests: s.st.requests,
+    hit: s.st.requests > 0 && inputs > 0 ? pctDown(s.st.read, inputs) : null,
+    context,
+    limits: s.ls,
+    now: s.now,
+    total: s.total,
+    reset: cfg.reset,
+    tzMin: s.who.tzMin,
+  }
+}
+
+/** A folder's last part: `/work/app` is `app`. */
+const baseName = (p: string) => p.replace(/\/+$/, '').split('/').pop() || p
+
+/** The git branch checked out in `cwd`, or null outside a repo or a detached head. */
+async function branchOf($: EngineInterface, cwd: string): Promise<string | null> {
+  try {
+    const r = await $.process.run(['git', 'branch', '--show-current'], { cwd, timeoutMs: 3000 })
+    return r.exitCode === 0 ? r.stdout.trim() || null : null
+  } catch {
+    return null
+  }
+}
+
+/** The account's e-mail from its login record, for showing only. */
+async function emailOf($: EngineInterface, configDir: string | undefined, home: string | undefined): Promise<string | null> {
+  for (const file of loginFileOf(configDir, home)) {
+    try {
+      const j = JSON.parse(await $.fs.read(file)) as { oauthAccount?: { emailAddress?: unknown } }
+      const e = j.oauthAccount?.emailAddress
+      if (typeof e === 'string' && e.includes('@')) return e
+    } catch {
+      // a missing or unreadable record shows no e-mail
+    }
+  }
+  return null
+}
+
+/** Minutes east of UTC, as the host's clock reads them (`date +%z`), for reset times on the clock. */
+async function tzOf($: EngineInterface): Promise<number> {
+  try {
+    const r = await $.process.run(['date', '+%z'], { timeoutMs: 3000 })
+    const m = /^([+-])(\d{2})(\d{2})/.exec(r.stdout.trim())
+    if (m) return (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]))
+  } catch {
+    // fall back to the module's own clock
+  }
+  return -new Date().getTimezoneOffset()
+}
+
+/** Whether the account's own statusLine command is this plugin's script, which then draws the line in the terminal. */
+async function hasLineScript($: EngineInterface): Promise<boolean> {
+  try {
+    const sl = (await $.settings.read({ key: 'statusLine' })) as { command?: unknown } | undefined
+    return typeof sl?.command === 'string' && /cache-?meter/i.test(sl.command)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Draws the status line where it is wanted: pinned under the prompt (`on`, or
+ * `auto` wherever no terminal status line script draws it, the desktop app
+ * among them), and written for the statusLine script when the account uses it.
+ */
+async function refreshLine($: EngineInterface, cfg: Settings, mem: Mem): Promise<void> {
+  try {
+    const s = await snapshot($, cfg)
+    const text = lineOf(lineFields(s, cfg), lineData(s, cfg, await liveContext($)))
+    const where = statusWhere(s, cfg)
+    let pin = where === 'on'
+    if (where === 'auto') {
+      const surfaces = await $.session.surfaces()
+      // Only a terminal whose statusLine runs the plugin's script draws the line already.
+      pin = !(mem.lineFile !== null && surfaces.length > 0 && surfaces.every(x => x === 'terminal'))
+    }
+    const shown = pin && text ? text : undefined
+    if (shown !== mem.pinned) {
+      $.ui.status(shown)
+      mem.pinned = shown
+    }
+    if (mem.lineFile && text !== mem.written) {
+      await $.fs.write(mem.lineFile, text)
+      mem.written = text
+    }
+  } catch {
+    // a status line that fails to draw never holds anything up
+  }
+}
+
+/**
+ * Sends the session's usage windows and context to the local Alfred engine, at
+ * most once a minute: the reading its account pills and context pills live on.
+ * The e-mail never goes; the token is the engine's local one, from its folder.
+ */
+async function sendAlfred($: EngineInterface, cfg: Settings, mem: Mem, force = false): Promise<void> {
+  if (!cfg.alfred.on) return
+  const now = await $.clock.now()
+  if (!force && mem.alfredAt && now - mem.alfredAt < ALFRED_EVERY_MS) return
+  mem.alfredAt = now
+  try {
+    const u = await $.session.usage()
+    const w = await read($, who)
+    const body = alfredBody({ configDir: w.configDir, session: await $.session.id(), model: await $.session.model(), limits: u.rateLimits, context: u.context })
+    if (!body) return
+    if (mem.token === null) {
+      const home = await $.env.get('HOME')
+      try {
+        mem.token = (await $.fs.read(`${homePath(cfg.alfred.home, home)}/data/api.token`)).trim()
+      } catch {
+        mem.token = ''
+      }
+    }
+    const bearer = await $.env.get('ALFRED_API_TOKEN')
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (mem.token) headers['X-Alfred-Local-Token'] = mem.token
+    if (bearer) headers['Authorization'] = `Bearer ${bearer}`
+    const url = (await $.env.get('ALFRED_URL')) || cfg.alfred.url
+    const r = await $.http.fetch(`${url.replace(/\/+$/, '')}/api/konta/uzycie`, { method: 'POST', headers, body: JSON.stringify(body) })
+    await update($, alfred, a => ({ at: now, ok: r.ok, status: r.status, error: r.ok ? null : r.text.slice(0, 200), sent: a.sent + (r.ok ? 1 : 0) }))
+  } catch (err) {
+    await update($, alfred, a => ({ ...a, at: now, ok: false, status: 0, error: String(err instanceof Error ? err.message : err).slice(0, 200) }))
+  }
+}
+
+/** Keeps the fields chosen with /cache for this account and every session after. */
+async function setLayout($: EngineInterface, change: (l: Layout) => Layout): Promise<Layout> {
+  let next = EMPTY_LAYOUT
+  await update($, layout, l => (next = change(l)))
+  if (next.band === null && next.line === null && next.status === null) await $.store.delete(LAYOUT_KEY)
+  else await $.store.set(LAYOUT_KEY, next)
+  $.ui.invalidate('ui.render')
+  return next
 }
 
 function openPane($: EngineInterface) {
@@ -205,6 +403,92 @@ async function keepWarmTick($: EngineInterface, cfg: Settings, run: PingRun): Pr
   }
 }
 
+/** The account and place the session runs in, read once a session and kept fresh by the events below. */
+async function loadWho($: EngineInterface, cfg: Settings, cwd: string): Promise<void> {
+  try {
+    const configDir = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? ''
+    const home = await $.env.get('HOME')
+    const { label } = accountOf(configDir, home, cfg.labels)
+    const effort = await $.settings.read({ key: 'effortLevel' }).catch(() => undefined)
+    const where = cwd || (await $.session.cwd())
+    const next: Who = {
+      label,
+      configDir,
+      email: await emailOf($, configDir, home),
+      mode: null,
+      style: null,
+      dir: baseName(where),
+      branch: await branchOf($, where),
+      effort: typeof effort === 'string' ? effort : null,
+      model: await $.session.model().catch(() => null),
+      tzMin: await tzOf($),
+    }
+    await update($, who, w => ({ ...next, mode: w.mode, style: w.style }))
+  } catch {
+    // the account fields stay empty rather than hold up the session
+  }
+}
+
+/** Keeps the permission mode a classic hook input carries. */
+async function seeMode($: EngineInterface, cfg: Settings, mem: Mem, mode: unknown): Promise<void> {
+  if (typeof mode === 'string' && mode && (await read($, who)).mode !== mode) {
+    await update($, who, w => ({ ...w, mode }))
+    void refreshLine($, cfg, mem)
+  }
+}
+
+/** Every field, and where each list stands now: for `/cache fields`. */
+async function fieldsText($: EngineInterface, cfg: Settings): Promise<string> {
+  const s = await snapshot($, cfg)
+  const band = bandFields(s, cfg)
+  const line = lineFields(s, cfg)
+  return [
+    `Band:        ${band.join(', ')}${s.layout.band ? ' (set with /cache)' : ''}`,
+    `Status line: ${line.join(', ')}${s.layout.line ? ' (set with /cache)' : ''}, pinned ${statusWhere(s, cfg)}`,
+    '',
+    ...FIELDS.map(f => `${f.padEnd(9)}${FIELD_INFO[f]}`),
+    '',
+    '/cache band|line show|hide <fields>, /cache band|line set <fields in order>, /cache band|line reset, /cache line on|off|auto.',
+  ].join('\n')
+}
+
+/** `/cache band ...` and `/cache line ...`: shows, hides, orders or resets the fields, or pins the line. */
+async function layoutCommand($: EngineInterface, cfg: Settings, mem: Mem, which: 'band' | 'line', verb: string, rest: string): Promise<string> {
+  const name = which === 'band' ? 'The band' : 'The status line'
+  const current = () => snapshot($, cfg).then(s => (which === 'band' ? bandFields(s, cfg) : lineFields(s, cfg)))
+  if (which === 'line' && (verb === 'on' || verb === 'off' || verb === 'auto')) {
+    await setLayout($, l => ({ ...l, status: verb === 'auto' && cfg.status === 'auto' ? null : verb }))
+    await refreshLine($, cfg, mem)
+    return verb === 'on'
+      ? 'The status line is pinned under the prompt in every session of this account.'
+      : verb === 'off'
+        ? 'The status line is no longer pinned under the prompt (a terminal statusLine script still draws it).'
+        : 'The status line is pinned wherever no terminal statusLine script draws it, the desktop app among them.'
+  }
+  if (verb === 'reset') {
+    await setLayout($, l => (which === 'band' ? { ...l, band: null } : { ...l, line: null }))
+    await refreshLine($, cfg, mem)
+    return `${name} follows the plugin settings again: ${(await current()).join(', ')}.`
+  }
+  if (verb === 'show' || verb === 'hide' || verb === 'set') {
+    const { fields, unknown } = parseFields(rest)
+    if (fields.length === 0) return `Name the fields to ${verb}: ${FIELDS.join(', ')}.${unknown.length ? ` Not a field: ${unknown.join(', ')}.` : ''}`
+    const now = await current()
+    const next =
+      verb === 'set' ? fields : verb === 'show' ? [...now, ...fields.filter(f => !now.includes(f))] : now.filter(f => !fields.includes(f))
+    await setLayout($, l => (which === 'band' ? { ...l, band: next } : { ...l, line: next }))
+    await refreshLine($, cfg, mem)
+    return `${name} shows: ${next.length ? next.join(', ') : 'nothing'}.${unknown.length ? ` Not a field: ${unknown.join(', ')}.` : ''}`
+  }
+  const s = await snapshot($, cfg)
+  const text = which === 'line' ? lineOf(lineFields(s, cfg), lineData(s, cfg, await liveContext($))) : ''
+  return [
+    `${name} shows: ${(await current()).join(', ')}.`,
+    ...(which === 'line' ? [`Now: ${text || '(nothing to show yet)'}`, `Pinned under the prompt: ${statusWhere(s, cfg)}.`] : []),
+    `/cache ${which} show|hide|set <fields>, /cache ${which} reset${which === 'line' ? ', /cache line on|off|auto' : ''}; /cache fields lists them all.`,
+  ].join('\n')
+}
+
 export const register: Register = (on, options) => {
   const cfg: Settings = {
     ttl: options.ttl === '1h' || options.ttl === '5m' ? options.ttl : 'auto',
@@ -212,8 +496,19 @@ export const register: Register = (on, options) => {
     guard: options.guard === 'confirm' || options.guard === 'warn' ? options.guard : 'off',
     warmDefault: options.keepWarm === 'on',
     warmForMs: WARM_FOR_MS[String(options.keepWarmFor)] ?? WARM_FOR_MS['2h']!,
+    band: fieldsOr(options.bandFields, BAND_DEFAULT),
+    line: fieldsOr(options.lineFields, LINE_DEFAULT),
+    status: options.statusLine === 'on' || options.statusLine === 'off' ? options.statusLine : 'auto',
+    reset: options.resetStyle === 'countdown' || options.resetStyle === 'clock' || options.resetStyle === 'both' ? options.resetStyle : 'auto',
+    labels: typeof options.accountLabels === 'string' ? options.accountLabels : '',
+    alfred: {
+      on: options.alfred === 'on',
+      home: typeof options.alfredHome === 'string' && options.alfredHome.trim() ? options.alfredHome.trim() : '~/Development/alfred-app',
+      url: typeof options.alfredUrl === 'string' && /^https?:\/\//.test(options.alfredUrl.trim()) ? options.alfredUrl.trim() : 'http://127.0.0.1:8765',
+    },
   }
   const run: PingRun = { busy: false }
+  const mem: Mem = { pinned: undefined, written: undefined, lineFile: null, alfredAt: 0, token: null }
   /** The cold send the person was already told about: its resend goes through. */
   let ackedAt = 0
 
@@ -224,24 +519,47 @@ export const register: Register = (on, options) => {
     // (a passed reset reads as such), so a subscription is never mistaken for an API key and its 1h TTL kept.
     const fresh = cleanLimits(u.rateLimits)
     if (fresh.length > 0) await update($, limits, () => fresh)
+    else if ((await read($, limits)).length === 0) {
+      // A new session shows the account's last known limits until its first reply brings fresh ones.
+      const known = (await $.store.get(LIMITS_KEY).catch(() => undefined)) as Limit[] | undefined
+      if (Array.isArray(known)) await update($, limits, () => cleanLimits(known))
+    }
     await update($, sessionUsd, () => u.cost?.usd ?? null)
     const root = repoRoot(await $.session.root())
     const kept = (await $.store.get(repoKey(root))) as { guard?: unknown; warm?: unknown } | undefined
     await update($, repo, () => ({ root, guard: flag(kept?.guard), warm: flag(kept?.warm) }))
+    await loadWho($, cfg, e.cwd)
+    const stored = (await $.store.get(LAYOUT_KEY).catch(() => undefined)) as Partial<Layout> | undefined
+    await update($, layout, () => ({
+      band: Array.isArray(stored?.band) ? parseFields(stored.band.join(',')).fields : null,
+      line: Array.isArray(stored?.line) ? parseFields(stored.line.join(',')).fields : null,
+      status: stored?.status === 'auto' || stored?.status === 'on' || stored?.status === 'off' ? stored.status : null,
+    }))
+    if (await hasLineScript($)) {
+      const tmp = ((await $.env.get('TMPDIR')) || '/tmp').replace(/\/+$/, '')
+      mem.lineFile = `${tmp}/cache-meter/${await $.session.id()}.line`
+    }
     await $.command.register({
       name: 'cache',
-      description: 'Prompt Cache: state, context, warm and cold cost, hit rate, usage limits, Keep Warm and the cold send guard (Cache Meter)',
-      argumentHint: '[warm|guard] [on|off] | [warm|guard] repo [on|off|reset]',
+      description: 'Cache Meter: prompt cache, usage limits, account and the status line; Keep Warm, the cold send guard and which fields show',
+      argumentHint: '[warm|guard] [on|off] | [warm|guard] repo [on|off|reset] | [band|line] [show|hide|set|reset] [fields] | line [on|off|auto] | fields',
     })
     $.clock.every(TICK_MS, () => {
       $.ui.invalidate('ui.render')
       void keepWarmTick($, cfg, run)
+      void refreshLine($, cfg, mem)
     })
+    await refreshLine($, cfg, mem)
+    void sendAlfred($, cfg, mem, true)
     return r
   })
 
   on('session.measure', async ($, e, next) => {
-    if (e.changed.includes('rateLimits')) await update($, limits, () => cleanLimits(e.rateLimits))
+    if (e.changed.includes('rateLimits')) {
+      const fresh = cleanLimits(e.rateLimits)
+      await update($, limits, () => fresh)
+      if (fresh.length > 0) await $.store.set(LIMITS_KEY, fresh).catch(() => undefined)
+    }
     if (e.changed.includes('cost') && e.cost) {
       const total = e.cost.usd
       await update($, sessionUsd, () => total)
@@ -250,8 +568,27 @@ export const register: Register = (on, options) => {
       const window = e.context.window
       await update($, facts, f => (f ? { ...f, window } : f))
     }
+    void sendAlfred($, cfg, mem, e.changed.includes('rateLimits'))
+    void refreshLine($, cfg, mem)
     return next(e)
   })
+
+  // The permission mode rides on every classic hook input: the latest one wins.
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    await seeMode($, cfg, mem, e.permission_mode)
+    return next(e)
+  }).catch(($, e, next) => next(e)) // reading the mode never holds up a prompt
+  on('classic.Stop', async ($, e, next) => {
+    await seeMode($, cfg, mem, e.permission_mode)
+    return next(e)
+  }).catch(($, e, next) => next(e)) // nor the end of a turn
+
+  // The output style is a fact of the system prompt the engine composes.
+  on('prompt.compose', async ($, e, next) => {
+    const style = e.outputStyle?.name ?? null
+    if ((await read($, who)).style !== style) await update($, who, w => ({ ...w, style }))
+    return next(e)
+  }).catch(($, e, next) => next(e)) // nor a request
 
   // /clear and compaction start a new prefix; a resume or fork knows how long it was away and how big it is.
   on('classic.SessionStart', async ($, e, next) => {
@@ -338,6 +675,16 @@ export const register: Register = (on, options) => {
       const window = u.context.window
       await update($, facts, f => (f && !f.window ? { ...f, window } : f))
     }
+    const s = await snapshot($, cfg)
+    if ([...bandFields(s, cfg), ...lineFields(s, cfg)].includes('branch')) {
+      const cwd = await $.session.cwd()
+      const branch = await branchOf($, cwd)
+      await update($, who, w => ({ ...w, dir: baseName(cwd), branch }))
+    }
+    const model = await $.session.model().catch(() => null)
+    if (model) await update($, who, w => (w.model === model ? w : { ...w, model }))
+    void sendAlfred($, cfg, mem)
+    void refreshLine($, cfg, mem)
     return r
   })
 
@@ -367,6 +714,11 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'cache' }, async ($, e) => {
     const [sub, arg, arg2] = (e.args ?? '').trim().toLowerCase().split(/\s+/)
+    if (sub === 'fields') return { text: await fieldsText($, cfg) }
+    if (sub === 'band' || sub === 'line') {
+      const rest = (e.args ?? '').trim().split(/\s+/).slice(2).join(' ')
+      return { text: await layoutCommand($, cfg, mem, sub, arg ?? '', rest) }
+    }
     if ((sub === 'warm' || sub === 'guard') && arg === 'repo') {
       const name = sub === 'warm' ? 'Keep Warm' : 'The cold send guard'
       const to = arg2 === 'on' ? true : arg2 === 'off' ? false : arg2 === 'reset' ? null : undefined
@@ -394,77 +746,27 @@ export const register: Register = (on, options) => {
     const opened = await openPane($)
     if (opened.isPlaced) return { text: 'Prompt Cache details are open in the side pane.' }
     const s = await snapshot($, cfg)
-    return { text: summary(s.view, s.st, s.ls, s.ttl, s.now, s.total, s.warmOn, s.w, s.switched, s.guardMode, s.warmFrom, s.guardFrom).join('\n') }
+    const line = lineOf(lineFields(s, cfg), lineData(s, cfg, await liveContext($)))
+    return { text: [`${'Status Line'.padEnd(14)}${line || 'Nothing to show yet'}`, ...summary(s.view, s.st, s.ls, s.ttl, s.now, s.total, s.warmOn, s.w, s.switched, s.guardMode, s.warmFrom, s.guardFrom)].join('\n') }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const rest = await next(e)
     if (e.props.hasSurvey) return rest
     const { Box, Button, Text } = $.ui.resolve(e)
-    const { view, st, ls, total, now, warmOn, switched } = await snapshot($, cfg)
-    const tone = TONE[view.state]
-    const cold = view.state === 'cold'
-
+    const s = await snapshot($, cfg)
+    const d = lineData(s, cfg, await liveContext($))
+    const chosen = bandFields(s, cfg)
     const segs: Segment[] = []
-    if (view.state === 'none') {
-      segs.push({
-        key: 'cache',
-        prio: 0,
-        pieces: [
-          { t: '○', dim: true },
-          { t: TITLE, bold: true },
-          { t: st.requests ? 'Waiting for the next reply' : 'Waiting for the first reply', dim: true },
-        ],
-      })
-    } else {
-      segs.push({
-        key: 'cache',
-        prio: 0,
-        pieces: [
-          { t: '●', color: tone },
-          { t: 'Cache', dim: true },
-          { t: cold ? 'Cold' : 'Warm', color: tone, bold: true },
-          switched
-            ? { t: 'Model changed', dim: true }
-            : cold
-              ? { t: `Idle ${dur(view.idleMs)}`, dim: true }
-              : { t: `${dur(view.leftMs)} left`, color: view.state === 'soon' ? tone : undefined },
-          ...(warmOn && !cold ? [{ t: 'Kept Warm', dim: true }] : []),
-        ],
-      })
-      // An unknown price is left out, never shown as a figure.
-      if (cold && view.cold != null) {
-        segs.push({ key: 'next', prio: 2, pieces: [{ t: 'Next', dim: true }, { t: usd(view.cold), color: 'error', bold: true }, { t: 'Re-cache', dim: true }] })
-      } else if (!cold && view.warm != null) {
-        segs.push({ key: 'next', prio: 2, pieces: [{ t: 'Next', dim: true }, { t: usd(view.warm), bold: true }] })
-      }
-      if (!cold && view.cold != null) segs.push({ key: 'cold', prio: 4, pieces: [{ t: 'If Cold', dim: true }, { t: usd(view.cold) }] })
-      segs.push({
-        key: 'ctx',
-        prio: 3,
-        pieces: [{ t: 'Context', dim: true }, { t: tok(view.ctx) }, ...(view.window ? [{ t: `${pct(view.ctx, view.window)}%`, dim: true }] : [])],
-      })
+    let hasMain = false
+    for (const f of chosen) {
+      const pieces = piecesOf(f, d, false)
+      if (!pieces) continue
+      const isLimit = f === '5h' || f === '7d' || f === 'spend'
+      // The plan's main limit stays in the band as long as the cache state does.
+      segs.push({ key: f, prio: isLimit && !hasMain ? 1 : PRIO[f], pieces })
+      if (isLimit) hasMain = true
     }
-    const inputs = st.read + st.write + st.uncached
-    if (st.requests > 0 && inputs > 0) segs.push({ key: 'hit', prio: 5, pieces: [{ t: 'Hit Rate', dim: true }, { t: `${pctDown(st.read, inputs)}%` }] })
-    ls.forEach((l, i) => {
-      const used = Math.round(l.percentUsed)
-      const reset = resetIn(l.resetsAt, now)
-      segs.push({
-        key: `limit-${l.kind}`,
-        // The plan's main limit stays in the band as long as the cache state does.
-        prio: i === 0 ? 1 : 3,
-        pieces:
-          reset === 'now'
-            ? [{ t: LIMIT_NAME[l.kind] ?? l.kind, dim: true }, { t: 'Just reset', dim: true }]
-            : [
-                { t: LIMIT_NAME[l.kind] ?? l.kind, dim: true },
-                { t: `${used}%`, color: limitTone(used), bold: true },
-                ...(reset ? [{ t: reset, dim: true }] : []),
-              ],
-      })
-    })
-    if (total != null && total > 0) segs.push({ key: 'usd', prio: 6, pieces: [{ t: 'Session', dim: true }, { t: usd(total) }] })
 
     const columns = e.props.bodyColumns ?? e.viewport?.columns ?? 100
     const DETAILS = 'Details'
@@ -490,7 +792,11 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
-    const { view, st, ls, ttl, now, total, w, warmOn, switched, guardMode, r, warmFrom, guardFrom } = await snapshot($, cfg)
+    const snap = await snapshot($, cfg)
+    const { view, st, ls, ttl, now, total, w, warmOn, switched, guardMode, r, warmFrom, guardFrom, sent } = snap
+    const me = snap.who
+    const d = lineData(snap, cfg, await liveContext($))
+    const lineText = lineOf(lineFields(snap, cfg), d)
     const LABEL = 14
     const tone = TONE[view.state]
     const inputs = st.read + st.write + st.uncached
@@ -542,9 +848,44 @@ export const register: Register = (on, options) => {
 
     const cards: RenderChildren[] = []
     const effort = effortLabel(view.effort)
+    const where = statusWhere(snap, cfg)
 
     cards.push(
-      <Card k="cache" title={TITLE} note={<Text dimColor>{`TTL ${ttl}`}</Text>} first>
+      <Card k="account" title="Account" note={<Text dimColor>{`[${me.label}]`}</Text>} first>
+        {me.email ? <Row k="acct-email" label="E-mail"><Text wrap="truncate">{me.email}</Text></Row> : null}
+        {d.model ? (
+          <Row k="acct-model" label="Model">
+            <Text>
+              <Text>{d.model}</Text>
+              {effortLabel(d.effort) ? <Text dimColor>{`${dot}Effort ${effortLabel(d.effort)}`}</Text> : null}
+            </Text>
+          </Row>
+        ) : null}
+        {me.mode ? <Row k="acct-mode" label="Mode"><Text>{me.mode}</Text></Row> : null}
+        {me.style ? <Row k="acct-style" label="Output Style"><Text>{me.style}</Text></Row> : null}
+        {me.dir ? (
+          <Row k="acct-dir" label="Folder">
+            <Text><Text>{me.dir}</Text>{me.branch ? <Text dimColor>{`${dot}${me.branch}`}</Text> : null}</Text>
+          </Row>
+        ) : null}
+        <Row k="acct-line" label="Status Line">
+          <Text>{lineText || 'Nothing to show yet'}</Text>
+          <Text dimColor size="footnote">
+            {where === 'off' ? 'Not pinned under the prompt' : where === 'on' ? 'Pinned under the prompt' : 'Pinned where no terminal statusLine script draws it'}
+          </Text>
+        </Row>
+        {cfg.alfred.on ? (
+          <Row k="acct-alfred" label="Alfred">
+            <Text dimColor>
+              {sent.at === 0 ? 'Nothing sent yet' : sent.ok ? `Usage sent ${dur(now - sent.at)} ago${dot}${sent.sent} this session` : `Not sent: ${sent.error ?? `HTTP ${sent.status}`}`}
+            </Text>
+          </Row>
+        ) : null}
+      </Card>,
+    )
+
+    cards.push(
+      <Card k="cache" title={TITLE} note={<Text dimColor>{`TTL ${ttl}`}</Text>}>
         {view.state === 'none' ? (
           <Row k="state" label="State"><Text dimColor>{st.requests ? 'Known after the next reply' : 'No request yet'}</Text></Row>
         ) : (

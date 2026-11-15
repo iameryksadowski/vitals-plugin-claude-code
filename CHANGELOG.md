@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-11-15
+
+### Added
+
+- A status line with the fields you choose: account (a letter from the config folder or your own label), e-mail, model with its version, effort, permission mode, output style, folder, git branch, everything the band shows, and the 5-hour and weekly limits with their reset on the clock or as a countdown.
+- It works in the desktop app and in the terminal: pinned under the prompt by the plugin where no `statusLine` command runs (the desktop app), and printed by the plugin's `bin/statusline.sh` where the account's `statusLine` points at it.
+- Every field can be shown, hidden and ordered, in the band and in the status line: `bandFields` and `lineFields` in the plugin settings, or `/cache band|line show|hide|set|reset` for this account; `/cache fields` lists them; `/cache line on|off|auto` pins the line.
+- `resetStyle` (countdown, clock or both) and `accountLabels`.
+- An Account card in the pane: account, e-mail, model and effort, mode, output style, folder and branch, the status line as it reads now and the last send to Alfred.
+- `alfred`: sends the session's usage windows, context and model id (never the e-mail) to the local Alfred engine once a minute per session, from the plugin itself, so desktop sessions report too. It replaces the sending in `alfred-app/scripts/statusline.sh`.
+
+### Changed
+
+- The band is built from the chosen fields; out of the box it reads as before.
+
+### Fixed
+
+- A test expected the engine's own band row above ours; since Claude Code stacks the rows itself (`AbovePromptList`), it now checks that both stay.
+
 ## [0.4.0] - 2026-11-12
 
 ### Added

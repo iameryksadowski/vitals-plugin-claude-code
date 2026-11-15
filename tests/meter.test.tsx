@@ -423,14 +423,15 @@ test('while a survey shows, the band steps aside', async ($, on) => {
   await ui.unmount()
 })
 
-test('what the engine draws above the prompt stays, the band goes under it', async ($, on) => {
+test('what the engine draws above the prompt stays beside the band', async ($, on) => {
   engine(on, { engineRow: true })
   mock.clock(on, { now: NOW })
   await start($)
   await step($)
   const ui = await $.ui.mount({ ...band(), surface: 'desktop' })
   const all = await texts(ui)
-  expect(all.indexOf('engine row')).toBe(0)
+  // The engine stacks the rows (AbovePromptList); the band never takes another row's place.
+  expect(all).toContain('engine row')
   expect(all).toContain('Cache')
   await ui.unmount()
 })

@@ -1,9 +1,10 @@
 # Cache Meter
 
-A quiet meter above the Claude Code prompt for the prompt cache and your usage limits. One row in your theme's colors; the full breakdown one click away.
+Prompt cache, usage limits and your account at a glance in Claude Code, in the terminal and in the desktop app. A band above the prompt and a status line, each with the fields you choose; the full breakdown one click away.
 
 ```
 ● Cache Warm 42m left  │  Next $0.06  │  If Cold $2.41  │  Context 301k 30%  │  Hit Rate 96%  │  Weekly 88% 2d 4h  │  Session $3.50    Details
+[A] name@example.com · Opus 5.5 · medium · 5h 34% (14:40) · 7d 55% (Mon 03:00) · ctx 31%
 ```
 
 ## Install
@@ -26,6 +27,69 @@ Or at the prompt of a Claude Code session: `/plugin marketplace add iameryksadow
 - **Hit rate and session cost**: share of input served from cache on the main thread, and the engine's session total.
 
 Parts drop out strictly by priority as the window narrows: the cache state stays always, then your main usage limit, then the next message cost and the context. `Details` (or `/cache`) opens a side pane with the full breakdown: TTL bar, read and write rates, cold/warm ratio, tokens read, written and uncached, what caching saved, cold writes paid, the last request and every usage limit.
+
+## Status line
+
+One line with the fields you pick, in the order you pick: by default the account, its e-mail, the model with its version, the effort, the 5-hour and weekly limits with their reset, and the context share. It is drawn in two ways, both from the same fields:
+
+| Where | How it is drawn |
+| --- | --- |
+| Desktop app (Code tab) | Pinned under the prompt by the plugin (`statusLine: auto`). The desktop app does not run a `statusLine` command. |
+| Terminal | The account's `statusLine` command runs the plugin's script, which prints the line the plugin wrote for that session. Without that script, the plugin pins the line under the prompt there too. |
+
+The terminal script, in each account's `settings.json`:
+
+```json
+"statusLine": {
+  "type": "command",
+  "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/cachemeter/bin/statusline.sh\""
+}
+```
+
+Before the plugin has written a session's line (its first moment, or with the plugin off) the script prints a short line from the status line JSON: account, model, limits, context. The script sends nothing anywhere.
+
+## Fields
+
+The band and the status line take the same fields. The band keeps them strictly by priority as the window narrows (the cache state longest, then the plan's main limit); the status line shows all of them.
+
+| Field | Shows |
+| --- | --- |
+| `account` | Account name: a letter from the config folder (`~/.claude` is A, `~/.claude-b` is B) or your own label (`accountLabels`) |
+| `email` | E-mail of the signed-in account, from the account's login record. Shown only, never sent |
+| `model` | Model with its version (Opus 5.5) |
+| `effort` | Reasoning effort |
+| `mode` | Permission mode (default, accept edits, plan, auto, bypass), as of the last prompt or turn |
+| `style` | Output style, when it is not the default |
+| `dir`, `branch` | Working folder and git branch |
+| `cache` | Prompt cache warm or cold, time left or idle time |
+| `next`, `ifcold` | What the next message costs now, and once the cache is cold |
+| `context` | Context tokens and share of the window |
+| `hit` | Cache hit rate of the session |
+| `5h`, `7d`, `spend` | Usage limits with their reset, each only where your plan reports it |
+| `session` | What the session has cost (API list prices) |
+
+Aliases work too: `weekly`, `ctx`, `cold`, `cost`, `limits` (all three limits), `cwd`, `git`.
+
+Change them for this account (every session after, over the plugin settings):
+
+```
+/cache line                      the line now, and its fields
+/cache line hide email effort
+/cache line show branch mode
+/cache line set account model 7d context
+/cache line reset                back to the plugin settings
+/cache line on | off | auto      pin it under the prompt always, never, or where no terminal script draws it
+/cache band show account model   the same for the band
+/cache fields                    every field and both lists
+```
+
+Or in `/plugin configure cache-meter@cachemeter` (and `/config`): `bandFields`, `lineFields`, `statusLine`, `resetStyle`, `accountLabels`.
+
+What Claude Code does not hand a plugin, the plugin does not show: fast mode has no reading for plugins yet.
+
+## Alfred
+
+With `alfred` set to `on`, the plugin sends the session's usage reading to the local Alfred engine (`POST http://127.0.0.1:8765/api/konta/uzycie`, its local token from `alfred-app/data/api.token`) at most once a minute per session: the config folder, the session id, each usage window (percent used and reset), the context window and the model id. Never the e-mail, never a credential, never anything said in the session. It works in the desktop app and in the terminal alike, and a down engine never holds anything up; the pane says when the last reading went. `alfredHome` and `alfredUrl` (or `ALFRED_URL`) point it elsewhere; `ALFRED_API_TOKEN` adds a bearer token.
 
 ## Honest by design
 
@@ -63,7 +127,7 @@ The pane shows for each which level set it. Claude Code reads plugin settings fr
 
 ## Settings
 
-All are pickers in `/plugin configure cache-meter@cachemeter` and `/config` (stored as `pluginConfigs` in your user settings). They are the default for every repo:
+All are in `/plugin configure cache-meter@cachemeter` and `/config` (stored as `pluginConfigs` in your user settings, so each account keeps its own):
 
 | Field | Values | Default |
 | --- | --- | --- |
@@ -71,10 +135,21 @@ All are pickers in `/plugin configure cache-meter@cachemeter` and `/config` (sto
 | `guard` | `off`, `confirm`, `warn` | `off` |
 | `keepWarm` | `off`, `on` | `off` |
 | `keepWarmFor` | `1h`, `2h`, `4h`, `8h` | `2h` after your last message |
+| `bandFields` | fields, in order | `cache, next, ifcold, context, hit, 5h, 7d, spend, session` |
+| `lineFields` | fields, in order | `account, email, model, effort, 5h, 7d, context` |
+| `statusLine` | `auto`, `on`, `off` | `auto`: pinned wherever no terminal script draws it |
+| `resetStyle` | `auto`, `countdown`, `clock`, `both` | `auto`: a countdown in the band, the clock in the status line |
+| `accountLabels` | `.claude=A, .claude-b=Work` | a letter from the folder |
+| `alfred` | `off`, `on` | `off` |
+| `alfredHome` | a folder | `~/Development/alfred-app` |
+| `alfredUrl` | a URL | `http://127.0.0.1:8765` |
+
+`ttl`, `guard` and `keepWarm` are the default for every repo (see [On, off and where](#on-off-and-where)); the fields are per account, and `/cache band|line ...` keeps a choice over them.
 
 ## Good to know
 
 - With Keep Warm off it never calls a model and costs nothing to run: it reads the engine's own figures and the API's usage counts.
+- Each account (config folder) reads its own login record, limits and settings, so the line never shows another account's figures.
 - Dollar figures are API list prices from `hooks/cache.ts`. On a subscription they show how heavy a message is against your limits, not a bill.
 - Only the main thread resets the cache clock; subagents have their own caches.
 - Built on Claude Code mods (2.1.287 or later). The mod API is in early access: after a Claude Code update, run the checks below.

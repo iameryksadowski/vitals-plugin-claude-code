@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { viewOf } from '../hooks/cache'
 import type { CacheView } from '../hooks/cache'
-import { adviceOf, autoPct, sharePct } from '../hooks/context'
+import { adviceOf, autoPct, mcpLabel, sharePct, splitRows } from '../hooks/context'
 import type { CompactFacts } from '../hooks/context'
 
 const NOW = Date.parse('2026-11-14T12:00:00Z')
@@ -63,4 +63,30 @@ test('nothing to say otherwise, and nothing for a cache just compacted', () => {
   expect(adviceOf(compacted, facts(950_000), 50)).toBeNull()
   // After a break (idle time not known) a cold cache still counts.
   expect(adviceOf({ ...cold(600_000), why: 'unknown' }, facts(950_000), 50)).toBe('cache cold, context 60%')
+})
+
+test('the breakdown counts only what is in the window; deferred schemas and the reserve stand apart', () => {
+  const split = splitRows([
+    { name: 'MCP tools (deferred)', tokens: 623_000, kind: 'deferred', isDeferred: true },
+    { name: 'Messages', tokens: 145_000, kind: 'used', isDeferred: false },
+    { name: 'Autocompact buffer', tokens: 33_000, kind: 'buffer', isDeferred: false },
+    { name: 'System tools (deferred)', tokens: 28_000, kind: 'deferred', isDeferred: true },
+    { name: 'System tools', tokens: 21_000, kind: 'used', isDeferred: false },
+    { name: 'Free space', tokens: 600_000, kind: 'free', isDeferred: false },
+  ])
+  expect(split.used).toEqual([{ name: 'Messages', tokens: 145_000 }, { name: 'System tools', tokens: 21_000 }])
+  expect(split.deferred).toBe(651_000)
+  expect(split.buffer).toBe(33_000)
+  // An engine that stamps no kind is read from the names.
+  expect(splitRows([{ name: 'MCP tools (deferred)', tokens: 10 }, { name: 'Free space', tokens: 5 }, { name: 'Skills', tokens: 3 }]).used).toEqual([{ name: 'Skills', tokens: 3 }])
+})
+
+test('an MCP server reads by its name; a connector named by an id reads by its tools', () => {
+  expect(mcpLabel('claude.ai Gmail', ['mcp__claude_ai_Gmail__send'])).toBe('Gmail')
+  expect(mcpLabel('linear', [])).toBe('linear')
+  const notion = ['notion-search', 'notion-fetch', 'notion-create-pages'].map(t => `mcp__c965a09b-8624-4245-9fd5-d262ad9b3fd1__${t}`)
+  expect(mcpLabel('c965a09b-8624-4245-9fd5-d262ad9b3fd1', notion)).toBe('Notion')
+  const mixed = ['image_crop', 'image_blur', 'asset_search', 'pdf_split', 'font_search'].map(t => `mcp__019d6fa9-a44e-4212-9a9b-1a15dcb43fb2__${t}`)
+  expect(mcpLabel('019d6fa9-a44e-4212-9a9b-1a15dcb43fb2', mixed)).toBe('image, asset, pdf (019d6fa9)')
+  expect(mcpLabel('019d6fa9-a44e-4212-9a9b-1a15dcb43fb2', [])).toBe('Connector 019d6fa9')
 })

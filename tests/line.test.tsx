@@ -3,6 +3,7 @@ import type { TestBody } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { alfredBody } from '../hooks/alfred'
+import { meterApi, setLatest, shareOf } from '../hooks/share'
 import { accountOf, clockOf, lineOf, loginFileOf, parseFields } from '../hooks/fields'
 import type { LineData } from '../hooks/fields'
 import { viewOf } from '../hooks/cache'
@@ -395,4 +396,20 @@ test('an Alfred that is down never holds the session, and the pane says so', opt
   expect(all).toContain('Alfred')
   expect(all.some(t => t.startsWith('Not sent') && t.includes('ECONNREFUSED'))).toBe(true)
   await ui.unmount()
+})
+
+test('other plugins read the session from $.sessionMeter, never the e-mail', async () => {
+  const who = { label: 'B', configDir: `${HOME}/.claude-b`, email: 'konto-b@example.com', model: 'claude-opus-5-5', effort: 'medium' }
+  const view = viewOf({ lastAt: NOW - 18 * 60_000, ctx: 301_000, window: 1_000_000, model: 'claude-opus-5-5', effort: 'medium' }, NOW, '1h')
+  const st = { requests: 4, read: 960, write: 20, uncached: 20, output: 50, savedUsd: 1, coldWrites: 0, coldUsd: 0, last: null }
+  const snap = shareOf({ now: NOW, ttl: '1h', view, who, live: { tokens: 300_000, window: 1_000_000 }, share: 30, autoAt: 92, info: { autoOn: true }, advice: null, ls: LIMITS_B, st, total: 3.5 }, 'sess-1')
+  expect(snap.account).toEqual({ label: 'B', configDir: `${HOME}/.claude-b` })
+  expect(snap.cache.state).toBe('warm')
+  expect(snap.cache.leftMs).toBe(42 * 60_000)
+  expect(snap.context).toEqual({ tokens: 301_000, window: 1_000_000, percent: 30, autoCompactOn: true, autoCompactAtPercent: 92, advice: null })
+  expect(snap.limits.map(l => l.kind)).toEqual(['five_hour', 'seven_day'])
+  expect(snap.session).toEqual({ requests: 4, hitPercent: 96, usd: 3.5 })
+  expect(JSON.stringify(snap)).not.toContain('example.com')
+  setLatest(snap)
+  expect(await meterApi().snapshot()).toEqual(snap)
 })

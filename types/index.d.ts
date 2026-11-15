@@ -107,7 +107,54 @@ export type ContextInfo = {
 /** The pane's open tab. */
 export type PaneTab = 'now' | 'context' | 'cost' | 'timeline' | 'settings'
 
+/** One usage window of the account, as the API reports it. */
+export type SessionMeterLimit = { kind: string; percentUsed: number; resetsAt: string | null }
+
+/**
+ * What `$.sessionMeter.snapshot()` gives another plugin: this session's account,
+ * cache, context and limits as the plugin last drew them. Never the e-mail, never
+ * anything said in the session. Times are Unix milliseconds, money is USD at API list prices.
+ */
+export type SessionMeterSnapshot = {
+  at: number
+  sessionId: string
+  account: { label: string; configDir: string }
+  model: string | null
+  effort: string | number | null
+  cache: {
+    state: 'none' | 'warm' | 'soon' | 'cold'
+    leftMs: number
+    idleMs: number
+    /** Why a cold cache's idle time is not known. */
+    why: 'compacted' | 'unknown' | null
+    ttl: '5m' | '1h'
+    nextUsd: number | null
+    coldUsd: number | null
+  }
+  context: {
+    tokens: number | null
+    window: number | null
+    percent: number | null
+    autoCompactOn: boolean | null
+    autoCompactAtPercent: number | null
+    /** Why compacting now is worth it, or null. */
+    advice: string | null
+  }
+  limits: SessionMeterLimit[]
+  session: { requests: number; hitPercent: number | null; usd: number | null }
+}
+
+/** The data other plugins read: list this plugin under `dependencies` and call `$.sessionMeter.snapshot()`. */
+export type SessionMeter = {
+  /** The latest reading, refreshed every 15 seconds and after each reply; null before the first. */
+  snapshot: () => Promise<SessionMeterSnapshot | null>
+}
+
 declare module 'claude-code' {
+  interface EngineInterface {
+    sessionMeter: SessionMeter
+  }
+
   interface PluginState {
     'cache-meter': {
       facts: Shaped<CacheFacts | null>

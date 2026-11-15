@@ -31,6 +31,18 @@ Parts drop out strictly by priority as the window narrows: the cache state stays
 | Timeline | When each message went and how long each reply took, with its tool count, and the breaks after which the cache went cold. Claude Code does not show these times |
 | Settings | The status line and where it is drawn, Keep Warm, the cold send guard, the compact hint, the Alfred send |
 
+## For other plugins
+
+The plugin adds `$.sessionMeter` to the engine, so another plugin can read this session's figures instead of measuring them again. List this plugin under `dependencies` in your `plugin.json` and call:
+
+```ts
+const s = await $.sessionMeter.snapshot()
+// s.account.label, s.cache.state, s.cache.nextUsd, s.context.percent, s.context.autoCompactAtPercent,
+// s.context.advice, s.limits (kind, percentUsed, resetsAt), s.session.hitPercent, s.session.usd
+```
+
+The reading refreshes every 15 seconds and after each reply; `null` before the first. It never carries the e-mail or anything said in the session. The types are in `types/index.d.ts` (`SessionMeterSnapshot`).
+
 ## Compaction
 
 Compacting costs about one pass over the context. It is cheapest at a break you choose:

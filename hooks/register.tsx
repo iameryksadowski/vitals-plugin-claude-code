@@ -1,6 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
+import { meterApi, setLatest, shareOf } from './share'
 import type { AlfredSend, CacheFacts, ContextInfo, EngineCache, KeepWarm, Layout, Limit, PaneTab, RepoPrefs, Stats, TimelineEntry, Who } from '../types'
 import { ALFRED_EVERY_MS, alfredBody, homePath } from './alfred'
 import { adviceOf, autoPct, sharePct } from './context'
@@ -280,6 +281,7 @@ async function hasLineScript($: EngineInterface): Promise<boolean> {
 async function refreshLine($: EngineInterface, cfg: Settings, mem: Mem): Promise<void> {
   try {
     const s = await snapshot($, cfg)
+    setLatest(shareOf(s, await $.session.id()))
     const text = lineOf(lineFields(s, cfg), lineData(s, cfg, await liveContext($)))
     const where = statusWhere(s, cfg)
     // auto: the terminal's statusLine script draws it; the band covers the rest, so nothing is pinned twice.
@@ -621,6 +623,12 @@ async function layoutCommand($: EngineInterface, cfg: Settings, mem: Mem, which:
 }
 
 export const register: Register = (on, options) => {
+  // Other plugins read this session's figures from $.sessionMeter (see types/index.d.ts).
+  on('engine.create', async ($, e, next) => {
+    const beneath: Omit<EngineInterface, 'sessionMeter'> = await next(e)
+    return { ...beneath, sessionMeter: meterApi() }
+  })
+
   const cfg: Settings = {
     ttl: options.ttl === '1h' || options.ttl === '5m' ? options.ttl : 'auto',
     // Both off unless switched on: in the settings for every project, a project's own settings, or per session.

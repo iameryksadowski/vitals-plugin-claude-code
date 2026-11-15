@@ -11,6 +11,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - A compact hint (`compact` field, on by default): the band says when compacting is worth it, when the cache is cold and the context is over `compactAt` (50%), when auto-compact is within 10 points, or over 80% with auto-compact off. `/cache compact` and Compact Now compact; `/cache autocompact on|off` switches Claude Code's auto-compact. Settings `compactHint` and `compactAt`.
 - Timeline tab: when each message went and how long each reply took, with its tool count, and the breaks after which the cache went cold.
 - In its last minutes the band also says what the next message costs once the cache is cold.
+- `$.sessionMeter.snapshot()` for other plugins: this session's account, cache, context with auto-compact and advice, limits and session figures. No e-mail, nothing said in the session.
 
 ### Changed
 

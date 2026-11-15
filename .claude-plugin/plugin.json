@@ -1,8 +1,8 @@
 {
   "name": "cache-meter",
   "displayName": "Cache Meter",
-  "version": "0.4.0",
-  "description": "Prompt cache and usage limits right above the Claude Code prompt: cache warm or cold with time left, what the next message costs warm and cold, context size, hit rate and your usage limits. /cache opens the full breakdown, with an optional Keep Warm. By Eryk Sadowski.",
+  "version": "0.5.0",
+  "description": "Prompt cache, usage limits and your account at a glance in Claude Code: a band above the prompt and a status line with the fields you choose (account, e-mail, model, effort, mode, cache warm or cold, next message cost, context, hit rate, 5-hour and weekly limits with resets, session cost). Works in the terminal and the desktop app. /cache opens the full breakdown, with an optional Keep Warm. By Eryk Sadowski.",
   "author": {
     "name": "Eryk Sadowski",
     "url": "https://eryksadowski.com"
@@ -11,13 +11,15 @@
   "repository": "https://github.com/iameryksadowski/cachemeter-plugin-claude-code",
   "license": "MIT",
   "keywords": [
-    "prompt-cache",
-    "usage",
-    "rate-limit",
+    "account",
     "cost",
-    "status",
+    "keep-warm",
     "mod",
-    "keep-warm"
+    "prompt-cache",
+    "rate-limit",
+    "status",
+    "statusline",
+    "usage"
   ],
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -64,6 +66,69 @@
         "4h",
         "8h"
       ]
+    },
+    "bandFields": {
+      "type": "string",
+      "title": "Band fields",
+      "description": "Fields of the band above the prompt, in order, comma separated. Empty: cache, next, ifcold, context, hit, 5h, 7d, spend, session. All: account, email, model, effort, mode, style, dir, branch, cache, next, ifcold, context, hit, 5h, 7d, spend, session. /cache band ... changes it per account.",
+      "default": "cache, next, ifcold, context, hit, 5h, 7d, spend, session"
+    },
+    "lineFields": {
+      "type": "string",
+      "title": "Status line fields",
+      "description": "Fields of the status line, in order, comma separated (same names as the band). Empty: account, email, model, effort, 5h, 7d, context. /cache line ... changes it per account.",
+      "default": "account, email, model, effort, 5h, 7d, context"
+    },
+    "statusLine": {
+      "type": "string",
+      "title": "Status line under the prompt",
+      "description": "auto: pinned under the prompt wherever no terminal statusLine script draws it (the desktop app among them). on: always pinned. off: never pinned (the terminal script still prints it). /cache line on|off|auto per account.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "on",
+        "off"
+      ]
+    },
+    "resetStyle": {
+      "type": "string",
+      "title": "Limit reset as",
+      "description": "auto: a countdown in the band, the clock time in the status line. countdown: 2d 4h. clock: 14:40, or Sun 05:00 further off. both.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "countdown",
+        "clock",
+        "both"
+      ]
+    },
+    "accountLabels": {
+      "type": "string",
+      "title": "Account labels",
+      "description": "Your own name per config folder, e.g. '.claude=A, .claude-b=Work, .claude-c=3'. Empty: a letter from the folder (.claude is A, .claude-b is B).",
+      "default": ""
+    },
+    "alfred": {
+      "type": "string",
+      "title": "Send usage to Alfred",
+      "description": "on: at most once a minute per session, send the usage limits, context and model id (never the e-mail) to the local Alfred engine, for its account and context pills.",
+      "default": "off",
+      "options": [
+        "off",
+        "on"
+      ]
+    },
+    "alfredHome": {
+      "type": "string",
+      "title": "Alfred folder",
+      "description": "Where alfred-app lives; its data/api.token is the local token.",
+      "default": "~/Development/alfred-app"
+    },
+    "alfredUrl": {
+      "type": "string",
+      "title": "Alfred URL",
+      "description": "The local Alfred engine.",
+      "default": "http://127.0.0.1:8765"
     }
   }
 }

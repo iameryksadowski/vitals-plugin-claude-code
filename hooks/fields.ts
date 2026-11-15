@@ -1,0 +1,276 @@
+// The fields the band and the status line are made of, and how each one reads. Pure, no engine.
+
+import type { Limit } from '../types'
+import type { Piece } from './band'
+import { LIMIT_NAME, TONE, dur, effortLabel, limitTone, pct, tok, usd } from './cache'
+import type { CacheView } from './cache'
+
+export const FIELDS = [
+  'account', 'email', 'model', 'effort', 'mode', 'style', 'dir', 'branch',
+  'cache', 'next', 'ifcold', 'context', 'hit', '5h', '7d', 'spend', 'session',
+] as const
+export type Field = (typeof FIELDS)[number]
+
+/** What each field shows, for `/cache fields` and the README. */
+export const FIELD_INFO: Record<Field, string> = {
+  account: 'Account name: a letter from the config folder (A, B, C) or your own label',
+  email: 'E-mail of the signed-in account (shown only, never sent anywhere)',
+  model: 'Model with its version (Opus 5.5)',
+  effort: 'Reasoning effort (low, medium, high, xhigh, max)',
+  mode: 'Permission mode (default, accept edits, plan, auto, bypass)',
+  style: 'Output style, when it is not the default',
+  dir: 'Working folder',
+  branch: 'Git branch',
+  cache: 'Prompt cache warm or cold, with time left or idle time',
+  next: 'What the next message costs (a cache read, or a re-cache when cold)',
+  ifcold: 'What the next message would cost once the cache is cold',
+  context: 'Context tokens and share of the window',
+  hit: 'Cache hit rate of the session',
+  '5h': '5-hour usage limit with its reset',
+  '7d': 'Weekly usage limit with its reset',
+  spend: 'Spend limit of a gateway, where there is one',
+  session: 'What the session has cost (API list prices)',
+}
+
+/** The band as it was before fields could be chosen. */
+export const BAND_DEFAULT: readonly Field[] = ['cache', 'next', 'ifcold', 'context', 'hit', '5h', '7d', 'spend', 'session']
+/** The status line, as the account status line used to read. */
+export const LINE_DEFAULT: readonly Field[] = ['account', 'email', 'model', 'effort', '5h', '7d', 'context']
+
+const ALIAS: Record<string, Field | Field[]> = {
+  weekly: '7d', week: '7d', '7-day': '7d', seven_day: '7d',
+  '5-hour': '5h', five_hour: '5h', '5hour': '5h',
+  limits: ['5h', '7d', 'spend'],
+  cold: 'ifcold', 'if-cold': 'ifcold',
+  ctx: 'context',
+  cost: 'session', usd: 'session',
+  hitrate: 'hit', 'hit-rate': 'hit',
+  permissions: 'mode', permission: 'mode',
+  'output-style': 'style', outputstyle: 'style',
+  cwd: 'dir', folder: 'dir',
+  git: 'branch',
+  label: 'account', konto: 'account',
+  mail: 'email', 'e-mail': 'email',
+}
+
+/** One word to a field, or null for a word that names none. */
+export const fieldOf = (word: string): Field[] | null => {
+  const w = word.trim().toLowerCase()
+  if ((FIELDS as readonly string[]).includes(w)) return [w as Field]
+  const a = ALIAS[w]
+  return a === undefined ? null : Array.isArray(a) ? a : [a]
+}
+
+/** A list as typed (`account, model 7d`): the fields in order, once each, and the words that named none. */
+export const parseFields = (text: unknown): { fields: Field[]; unknown: string[] } => {
+  const fields: Field[] = []
+  const unknown: string[] = []
+  for (const word of String(text ?? '').split(/[\s,;|]+/).filter(Boolean)) {
+    const f = fieldOf(word)
+    if (!f) unknown.push(word)
+    else for (const x of f) if (!fields.includes(x)) fields.push(x)
+  }
+  return { fields, unknown }
+}
+
+/** A list from the settings, or the default when the setting is empty or names no field. */
+export const fieldsOr = (text: unknown, fallback: readonly Field[]): Field[] => {
+  const { fields } = parseFields(text)
+  return fields.length > 0 ? fields : [...fallback]
+}
+
+/**
+ * The account a session runs under, read from its config folder: the default
+ * `~/.claude` is A, `~/.claude-b` is B, `~/.claude-work` is WORK. `labels`
+ * (`.claude-b=Work, A=1`) names a folder by its full path, its name with or
+ * without the dot, or its default letter.
+ */
+export const accountOf = (configDir: string | undefined, home: string | undefined, labels: unknown): { label: string; dir: string } => {
+  const h = (home ?? '').replace(/\/+$/, '')
+  const dir = (configDir ?? '').replace(/\/+$/, '') || `${h}/.claude`
+  const base = dir.split('/').pop() ?? dir
+  const letter = base === '.claude' || base === 'claude' ? 'A' : base.replace(/^\.?claude[-_.]?/i, '').replace(/^\./, '').toUpperCase() || base.toUpperCase()
+  const keys = new Set([dir, base, base.replace(/^\./, ''), letter.toLowerCase()])
+  for (const pair of String(labels ?? '').split(/[,;\n]+/)) {
+    const at = pair.indexOf('=')
+    if (at < 0) continue
+    const key = pair.slice(0, at).trim().replace(/^~(?=\/)/, h).replace(/\/+$/, '')
+    const value = pair.slice(at + 1).trim()
+    if (value && (keys.has(key) || keys.has(key.toLowerCase()))) return { label: value, dir }
+  }
+  return { label: letter, dir }
+}
+
+/** Where the account keeps its login record: `~/.claude.json` for the default folder, else inside the folder. */
+export const loginFileOf = (configDir: string | undefined, home: string | undefined): string[] => {
+  const h = (home ?? '').replace(/\/+$/, '')
+  const dir = (configDir ?? '').replace(/\/+$/, '')
+  if (!dir) return [`${h}/.claude.json`]
+  return dir === `${h}/.claude` ? [`${dir}/.claude.json`, `${h}/.claude.json`] : [`${dir}/.claude.json`]
+}
+
+export type ResetStyle = 'auto' | 'countdown' | 'clock' | 'both'
+
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+const two = (n: number) => String(n).padStart(2, '0')
+
+/**
+ * A reset as a clock time in the person's zone (`tzMin` east of UTC): `14:40`
+ * within a day, `Sun 05:00` further off. Empty for a missing or bad time.
+ */
+export const clockOf = (iso: string | undefined, now: number, tzMin: number): string => {
+  if (!iso) return ''
+  const at = Date.parse(iso)
+  if (Number.isNaN(at)) return ''
+  const d = new Date(at + tzMin * 60_000)
+  const hm = `${two(d.getUTCHours())}:${two(d.getUTCMinutes())}`
+  return at - now < 20 * 3_600_000 ? hm : `${DAYS[d.getUTCDay()]} ${hm}`
+}
+
+/** Everything a field reads, gathered once per drawing. */
+export type LineData = {
+  label: string
+  email: string | null
+  mode: string | null
+  style: string | null
+  dir: string | null
+  branch: string | null
+  model: string | null
+  effort: string | number | null
+  view: CacheView
+  switched: boolean
+  warmOn: boolean
+  requests: number
+  /** Share of input read from the cache, rounded down; null before the first request. */
+  hit: number | null
+  /** The live window as the engine has it, for the context before this session's first reply. */
+  context: { tokens?: number; window: number; percent?: number }
+  limits: readonly Limit[]
+  now: number
+  total: number | null
+  reset: ResetStyle
+  tzMin: number
+}
+
+const MODE_NAME: Record<string, string> = {
+  default: 'default', acceptEdits: 'accept edits', plan: 'plan', auto: 'auto', bypassPermissions: 'bypass', dontAsk: "don't ask",
+}
+const LIMIT_SHORT: Record<string, string> = { five_hour: '5h', seven_day: '7d', spend_limit: 'spend' }
+const KIND: Partial<Record<Field, string>> = { '5h': 'five_hour', '7d': 'seven_day', spend: 'spend_limit' }
+
+/** The effort as the status line spells it: the level itself, a budget in tokens. */
+const effortShort = (e: string | number | null): string | null => (e == null ? null : typeof e === 'number' ? `${tok(e)} budget` : e)
+
+/**
+ * One field as pieces, `compact` for the status line and full for the band;
+ * null when there is nothing true to show (no figure is ever guessed).
+ */
+export const piecesOf = (f: Field, d: LineData, compact: boolean): Piece[] | null => {
+  const v = d.view
+  const cold = v.state === 'cold'
+  const tone = TONE[v.state]
+  switch (f) {
+    case 'account':
+      return [{ t: `[${d.label}]`, bold: true }]
+    case 'email':
+      return d.email ? [{ t: d.email, dim: !compact }] : null
+    case 'model':
+      return d.model ? [{ t: d.model }] : null
+    case 'effort': {
+      const e = compact ? effortShort(d.effort) : effortLabel(d.effort)
+      return e ? (compact ? [{ t: e }] : [{ t: 'Effort', dim: true }, { t: e }]) : null
+    }
+    case 'mode': {
+      if (!d.mode) return null
+      const m = MODE_NAME[d.mode] ?? d.mode
+      return compact ? [{ t: m }] : [{ t: 'Mode', dim: true }, { t: m, color: d.mode === 'bypassPermissions' ? 'warning' : undefined }]
+    }
+    case 'style':
+      return d.style && d.style.toLowerCase() !== 'default' ? [{ t: 'Style', dim: true }, { t: d.style }] : null
+    case 'dir':
+      return d.dir ? [{ t: d.dir, dim: !compact }] : null
+    case 'branch':
+      return d.branch ? [{ t: '⎇', dim: true }, { t: d.branch }] : null
+    case 'cache': {
+      if (v.state === 'none') {
+        if (compact) return null
+        return [{ t: '○', dim: true }, { t: 'Prompt Cache', bold: true }, { t: d.requests ? 'Waiting for the next reply' : 'Waiting for the first reply', dim: true }]
+      }
+      const when = d.switched ? 'Model changed' : cold ? `Idle ${dur(v.idleMs)}` : `${dur(v.leftMs)} left`
+      if (compact) return [{ t: '●', color: tone }, { t: cold ? 'Cold' : 'Warm', color: tone }, { t: d.switched ? 'model changed' : cold ? dur(v.idleMs) : dur(v.leftMs) }]
+      return [
+        { t: '●', color: tone },
+        { t: 'Cache', dim: true },
+        { t: cold ? 'Cold' : 'Warm', color: tone, bold: true },
+        d.switched || cold ? { t: when, dim: true } : { t: when, color: v.state === 'soon' ? tone : undefined },
+        ...(d.warmOn && !cold ? [{ t: 'Kept Warm', dim: true }] : []),
+      ]
+    }
+    case 'next':
+      if (v.state === 'none') return null
+      if (cold) return v.cold == null ? null : [{ t: compact ? 'next' : 'Next', dim: true }, { t: usd(v.cold), color: 'error', bold: true }, ...(compact ? [] : [{ t: 'Re-cache', dim: true }])]
+      return v.warm == null ? null : [{ t: compact ? 'next' : 'Next', dim: true }, { t: usd(v.warm), bold: !compact }]
+    case 'ifcold':
+      return v.state === 'none' || cold || v.cold == null ? null : [{ t: compact ? 'if cold' : 'If Cold', dim: true }, { t: usd(v.cold) }]
+    case 'context': {
+      // Before this session's first reply the band waits; the status line already shows the engine's live figure.
+      if (v.state === 'none' && !compact) return null
+      const tokens = v.state !== 'none' ? v.ctx : d.context.tokens
+      const window = v.state !== 'none' && v.window ? v.window : d.context.window
+      if (!tokens) return null
+      const share = window ? pct(tokens, window) : d.context.percent
+      if (compact) return [{ t: 'ctx', dim: true }, { t: share != null ? `${share}%` : tok(tokens) }]
+      return [{ t: 'Context', dim: true }, { t: tok(tokens) }, ...(share != null ? [{ t: `${share}%`, dim: true }] : [])]
+    }
+    case 'hit':
+      return d.hit == null ? null : [{ t: compact ? 'hit' : 'Hit Rate', dim: true }, { t: `${d.hit}%` }]
+    case '5h':
+    case '7d':
+    case 'spend': {
+      const l = d.limits.find(x => x.kind === KIND[f])
+      return l ? limitPieces(l, d, compact) : null
+    }
+    case 'session':
+      return d.total != null && d.total > 0 ? (compact ? [{ t: usd(d.total) }] : [{ t: 'Session', dim: true }, { t: usd(d.total) }]) : null
+  }
+}
+
+/** One usage window: name, percent used in its tone, and its reset as the settings say. */
+export const limitPieces = (l: Limit, d: Pick<LineData, 'now' | 'reset' | 'tzMin'>, compact: boolean): Piece[] => {
+  const name = compact ? (LIMIT_SHORT[l.kind] ?? l.kind) : (LIMIT_NAME[l.kind] ?? l.kind)
+  const ms = l.resetsAt ? Date.parse(l.resetsAt) - d.now : NaN
+  if (!Number.isNaN(ms) && ms <= 0) return [{ t: name, dim: true }, { t: compact ? 'reset' : 'Just reset', dim: true }]
+  const used = Math.round(l.percentUsed)
+  const style = d.reset === 'auto' ? (compact ? 'clock' : 'countdown') : d.reset
+  const countdown = Number.isNaN(ms) ? '' : dur(ms)
+  const clock = clockOf(l.resetsAt, d.now, d.tzMin)
+  const when =
+    style === 'clock' ? (clock ? (compact ? `(${clock})` : clock) : '')
+      : style === 'both' ? [countdown, clock ? `(${clock})` : ''].filter(Boolean).join(' ')
+        : countdown
+  return [{ t: name, dim: true }, { t: `${used}%`, color: limitTone(used), bold: !compact }, ...(when ? [{ t: when, dim: true }] : [])]
+}
+
+/**
+ * The status line as text: each field's pieces one space apart, fields split
+ * by a middle dot; the account tag stands before the next field with a space,
+ * as `[A] name@example.com · Opus 5.5`.
+ */
+export const lineOf = (fields: readonly Field[], d: LineData): string => {
+  let out = ''
+  let afterTag = false
+  for (const f of fields) {
+    const p = piecesOf(f, d, true)
+    if (!p || p.length === 0) continue
+    const text = p.map(x => x.t).join(' ')
+    out += out === '' ? text : afterTag ? ` ${text}` : ` · ${text}`
+    afterTag = f === 'account'
+  }
+  return out
+}
+
+/** How long a field may stay in the band as it narrows: the lower, the longer. */
+export const PRIO: Record<Field, number> = {
+  cache: 0, account: 1, '5h': 3, '7d': 3, spend: 3, next: 2, context: 3, model: 4, ifcold: 4, hit: 5, effort: 5,
+  session: 6, mode: 6, branch: 7, dir: 8, style: 8, email: 9,
+}

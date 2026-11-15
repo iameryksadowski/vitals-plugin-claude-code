@@ -10,17 +10,18 @@
       "name": "cache-meter",
       "displayName": "Cache Meter",
       "source": "./",
-      "description": "Prompt cache and usage limits right above the Claude Code prompt. By Eryk Sadowski.",
+      "description": "Prompt cache, usage limits and your account in a band and a status line you set up field by field, in the terminal and the desktop app. By Eryk Sadowski.",
       "author": {
         "name": "Eryk Sadowski",
         "url": "https://eryksadowski.com"
       },
       "category": "productivity",
       "tags": [
-        "prompt-cache",
-        "usage",
         "cost",
-        "status"
+        "prompt-cache",
+        "status",
+        "statusline",
+        "usage"
       ]
     }
   ]

@@ -57,6 +57,34 @@ export type EngineCache = { ttl: '5m' | '1h' | null; switchedTo: string | null }
  */
 export type RepoPrefs = { root: string | null; guard: boolean | null; warm: boolean | null }
 
+/**
+ * Who and where the session runs, for the account fields: the account's label
+ * and config folder, its e-mail (shown only), the permission mode, output
+ * style, folder and branch as last seen, the effort the settings ask for, the
+ * session's model and the person's time zone (minutes east of UTC).
+ */
+export type Who = {
+  label: string
+  configDir: string
+  email: string | null
+  mode: string | null
+  style: string | null
+  dir: string | null
+  branch: string | null
+  effort: string | null
+  model: string | null
+  tzMin: number
+}
+
+/**
+ * Fields chosen with /cache, over the plugin settings; null follows the
+ * settings. `status` is where the status line is pinned.
+ */
+export type Layout = { band: string[] | null; line: string[] | null; status: 'auto' | 'on' | 'off' | null }
+
+/** The last usage reading sent to the local Alfred engine: when, and how it went. */
+export type AlfredSend = { at: number; ok: boolean; status: number; error: string | null; sent: number }
+
 declare module 'claude-code' {
   interface PluginState {
     'cache-meter': {
@@ -69,6 +97,9 @@ declare module 'claude-code' {
       /** The cold send guard switched for this session; null follows the setting. */
       guard: Shaped<boolean | null>
       repo: Shaped<RepoPrefs>
+      who: Shaped<Who>
+      layout: Shaped<Layout>
+      alfred: Shaped<AlfredSend>
     }
   }
 }

@@ -13,7 +13,7 @@ export type Field = (typeof FIELDS)[number]
 
 /** What each field shows, for `/vitals fields` and the README. */
 export const FIELD_INFO: Record<Field, string> = {
-  account: 'Account name: a letter from the config folder (A, B, C) or your own label',
+  account: 'Account name: your own (/vitals account Work), else a letter from the config folder (A, B, C) when there are several; hidden with one account',
   email: 'E-mail of the signed-in account (shown only, never sent anywhere)',
   model: 'Model with its version (Opus 5.5)',
   effort: 'Reasoning effort (low, medium, high, xhigh, max)',
@@ -87,20 +87,28 @@ export const fieldsOr = (text: unknown, fallback: readonly Field[]): Field[] => 
  * (`.claude-b=Work, A=1`) names a folder by its full path, its name with or
  * without the dot, or its default letter.
  */
-export const accountOf = (configDir: string | undefined, home: string | undefined, labels: unknown): { label: string; dir: string } => {
+export type AccountFrom = 'own' | 'setting' | 'folder'
+
+export const accountOf = (
+  configDir: string | undefined,
+  home: string | undefined,
+  labels: unknown,
+  own?: unknown,
+): { label: string; dir: string; from: AccountFrom } => {
   const h = (home ?? '').replace(/\/+$/, '')
   const dir = (configDir ?? '').replace(/\/+$/, '') || `${h}/.claude`
   const base = dir.split('/').pop() ?? dir
   const letter = base === '.claude' || base === 'claude' ? 'A' : base.replace(/^\.?claude[-_.]?/i, '').replace(/^\./, '').toUpperCase() || base.toUpperCase()
+  if (typeof own === 'string' && own.trim()) return { label: own.trim(), dir, from: 'own' }
   const keys = new Set([dir, base, base.replace(/^\./, ''), letter.toLowerCase()])
   for (const pair of String(labels ?? '').split(/[,;\n]+/)) {
     const at = pair.indexOf('=')
     if (at < 0) continue
     const key = pair.slice(0, at).trim().replace(/^~(?=\/)/, h).replace(/\/+$/, '')
     const value = pair.slice(at + 1).trim()
-    if (value && (keys.has(key) || keys.has(key.toLowerCase()))) return { label: value, dir }
+    if (value && (keys.has(key) || keys.has(key.toLowerCase()))) return { label: value, dir, from: 'setting' }
   }
-  return { label: letter, dir }
+  return { label: letter, dir, from: 'folder' }
 }
 
 /** Where the account keeps its login record: `~/.claude.json` for the default folder, else inside the folder. */
@@ -175,7 +183,7 @@ export const piecesOf = (f: Field, d: LineData, compact: boolean): Piece[] | nul
   const tone = TONE[v.state]
   switch (f) {
     case 'account':
-      return [{ t: d.label, bold: true }]
+      return d.label ? [{ t: d.label, bold: true }] : null
     case 'email':
       return d.email ? [{ t: d.email, dim: !compact }] : null
     case 'model':
@@ -198,7 +206,7 @@ export const piecesOf = (f: Field, d: LineData, compact: boolean): Piece[] | nul
     case 'cache': {
       if (v.state === 'none') {
         if (compact) return null
-        return [{ t: '○', dim: true }, { t: 'Prompt Cache', bold: true }, { t: 'Waiting for the first reply', dim: true }]
+        return [{ t: '○', dim: true }, { t: 'Prompt Cache', bold: true }, { t: d.requests > 0 ? 'Known after the next reply' : 'Waiting for the first reply', dim: true }]
       }
       const idle = v.why === 'compacted' ? 'Compacted' : v.why === 'unknown' ? 'After a break' : `Idle ${dur(v.idleMs)}`
       const when = d.switched ? 'Model changed' : cold ? idle : `${dur(v.leftMs)} left`

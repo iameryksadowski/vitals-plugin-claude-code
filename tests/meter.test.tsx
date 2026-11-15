@@ -89,8 +89,13 @@ const engine = (on: On, w: World = {}) => {
     return { value: undefined }
   })
   on('store.keys', () => ({ value: [...store.keys()] }))
-  // The default config folder: account A.
+  // The default config folder: account A, on a machine with a second account next to it.
   mock.env(on, { HOME: '/Users/test' })
+  on('fs.list', (_, e) => ({
+    value: (e as { path?: string }).path === '/Users/test'
+      ? ['.claude', '.claude-b'].map(name => ({ name, kind: 'dir', size: 0, mtimeMs: 0, isLink: false }))
+      : [],
+  }))
   const state = {
     usage: w.usage ?? OPUS,
     limits: w.limits ?? [FIVE_HOUR, WEEKLY],
@@ -1107,7 +1112,7 @@ test('compactHint off shows no hint, even near auto-compact', { options: { compa
 
 // ── The timeline ────────────────────────────────────────────────────────────
 
-const prompt = ($: $T, text: string, source?: 'user' | 'schedule_wakeup') =>
+const prompt = ($: $T, text: string, source?: 'user' | 'system' | 'schedule_wakeup') =>
   $.classic.UserPromptSubmit({
     hook_event_name: 'UserPromptSubmit', session_id: 's', transcript_path: '/t', cwd: '/work/app', prompt: text, permission_mode: 'default', ...(source ? { source } : {}),
   } as never)
@@ -1125,19 +1130,26 @@ test('the timeline records your message and the reply with its time and tools, a
   await step($)
   await clock.advance(42_000)
   await $.turn.complete({ answer: 'done', durationMs: 42_000, isAborted: false, turnId: 't1', reason: 'answer' })
-  // A prompt nobody typed is no message of yours.
+  // A prompt nobody typed is no message of yours: it shows under who sent it.
   await prompt($, 'scheduled check', 'schedule_wakeup')
+  await prompt($, '<system-reminder>Session moved.</system-reminder>', 'system')
+  await prompt($, '<cross-session-message from="uds:/tmp/x.sock">Final names for the plugin</cross-session-message>', 'system')
   await clock.advance(2 * HOUR)
   await prompt($, 'back again')
   expect(await cache($, 'timeline')).toBe('Timeline is open in the side pane.')
   const ui = await $.ui.mount({ ...pane(), surface: 'desktop' })
   const all = await texts(ui)
-  expect(all).toContain('2 messages')
-  expect(all.filter(t => t === 'You').length).toBe(2)
-  expect(all).toContain('  ·  Fix the login bug please')
+  expect(all).toContain('2 messages from you')
+  expect(all).toContain('Fix the login bug please')
+  expect(all).toContain('back again')
   expect(all).toContain('Claude')
   expect(all).toContain('  ·  42s  ·  2 tools')
   expect(all).toContain('2h 00m idle, the cache went cold')
-  expect(all.some(t => t.includes('scheduled'))).toBe(false)
+  expect(all).toContain('Scheduled')
+  expect(all).toContain('scheduled check')
+  expect(all).toContain('App')
+  expect(all).toContain('Session')
+  expect(all).toContain('Final names for the plugin')
+  expect(all.some(t => t.includes('system-reminder') || t.includes('cross-session'))).toBe(false)
   await ui.unmount()
 })

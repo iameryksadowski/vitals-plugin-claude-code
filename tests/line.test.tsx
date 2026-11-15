@@ -28,6 +28,10 @@ type Account = {
   branch?: string
   context?: { tokens?: number; window: number; percent?: number }
   store?: Record<string, unknown>
+  /** Config folders next to ~/.claude: other accounts on the machine. */
+  siblings?: string[]
+  /** When the session's transcript was last written, for a session Vitals joins late. */
+  transcriptAt?: number
 }
 
 /** One account's world beneath the plugin: its folder, login record, limits and the Alfred engine. */
@@ -55,6 +59,17 @@ const world = (on: On, a: Account = {}) => {
     const path = (e as { path: string }).path
     if (!(path in files)) throw new Error(`ENOENT ${path}`)
     return { value: files[path]! }
+  })
+  on('fs.list', (_, e) => {
+    const path = (e as { path?: string }).path
+    if (path !== HOME) return { value: [] }
+    const dirs = a.siblings ?? ['.claude-b']
+    return { value: ['.claude', ...dirs, 'Development'].map(name => ({ name, kind: 'dir', size: 0, mtimeMs: 0, isLink: false })) }
+  })
+  on('fs.stat', (_, e) => {
+    const path = (e as { path: string }).path
+    if (a.transcriptAt && path.endsWith('/sess-1.jsonl')) return { value: { kind: 'file', size: 2048, mtimeMs: a.transcriptAt, isLink: false } }
+    return { deny: `ENOENT ${path}` }
   })
   on('fs.write', (_, e) => {
     const { path, text } = e as { path: string; text: string }
@@ -422,4 +437,28 @@ test('the old /cache answers as /vitals does', async ($, on) => {
   const viaNew = ((await $.command.run({ command: 'vitals', args: 'fields' } as never)) as { text?: string }).text ?? ''
   expect(viaOld).toContain('Band:')
   expect(viaOld).toBe(viaNew)
+})
+
+test('with one account on the machine its name is left out; /vitals account names it, reset hands it back', options(ACCOUNT_LINE), async ($, on) => {
+  const seen = world(on, { siblings: [] })
+  mock.clock(on, { now: NOW })
+  await start($)
+  expect(seen.status.at(-1)).toBe('konto-a@example.com · Opus 5.5 · medium · ctx 30%')
+  expect(await cache($, 'account')).toContain('the only account here')
+  expect(await cache($, 'account Work Laptop')).toBe('This account is now Work Laptop, in every session on it.')
+  await settle($)
+  expect(seen.status.at(-1)).toBe('Work Laptop · konto-a@example.com · Opus 5.5 · medium · ctx 30%')
+  expect(seen.store.get('account')).toEqual({ label: 'Work Laptop' })
+  expect(await cache($, 'account reset')).toContain('the only account here')
+  await settle($)
+  expect(seen.status.at(-1)).toBe('konto-a@example.com · Opus 5.5 · medium · ctx 30%')
+})
+
+test('a session Vitals joins late reads its cache from when the transcript was last written', options({ statusLine: 'on', lineFields: 'cache, context' }), async ($, on) => {
+  // A subscription (it reports limits) caches for an hour.
+  const seen = world(on, { transcriptAt: NOW - 20 * 60_000, limits: LIMITS_B })
+  mock.clock(on, { now: NOW })
+  await start($)
+  await settle($)
+  expect(seen.status.at(-1)).toBe('● Warm 40m · ctx 30%')
 })

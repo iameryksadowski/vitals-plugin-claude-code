@@ -2,7 +2,19 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.6.1] - 2026-11-15
+
+### Fixed
+
+- A session Vitals joins late (the plugin installed or reloaded mid-session) no longer reads "Waiting for the first reply": the cache is timed from when the session's transcript was last written. With requests but no figure yet it says "Known after the next reply".
+- The Context tab's What Fills It counted tool schemas loaded on demand and the auto-compact reserve, so it summed to far more than the context. It now lists only what is in the window, each as a share of it, and names the deferred schemas and the reserve apart.
+- MCP servers from claude.ai connectors read by an id. They are now named from their tools (Notion, or the commonest tool prefixes), and each shows what it has in the window and what loads on demand.
+- Meters drew past their share in the desktop app, with an ellipsis. They are now a fixed row of cells.
+- The timeline took the app's notes (system reminders) and other sessions' messages for yours. Each entry now says who sent it: you, another session, a finished task, a scheduled prompt or the app, with the notes taken out. Claude's replies show their opening line.
+
+### Added
+
+- `/vitals account [name|reset]` names the account, kept for every session on it. With one account on the machine the band and the status line leave the account out.
 
 ### Changed
 

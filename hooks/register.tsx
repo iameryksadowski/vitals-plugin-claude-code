@@ -4,7 +4,8 @@ import type { CommandRunInput, EngineInterface, Register, RenderChildren } from 
 import { meterApi, setLatest, shareOf } from './share'
 import type { AlfredSend, CacheFacts, ContextInfo, EngineCache, KeepWarm, Layout, Limit, PaneTab, RepoPrefs, Stats, TimelineEntry, Who } from '../types'
 import { ALFRED_EVERY_MS, alfredBody, homePath } from './alfred'
-import { adviceOf, autoPct, sharePct } from './context'
+import { adviceOf, autoPct, mcpLabel, sharePct, splitRows } from './context'
+import { WHO_NAME, firstLine, promptEntry } from './timeline'
 import { SEP, fit, spaced } from './band'
 import type { Segment } from './band'
 import {
@@ -27,7 +28,7 @@ const PANE = 'vitals'
 const TITLE = 'Vitals'
 /** How often the band redraws, so the countdown and the warm-to-cold flip stay current. */
 const TICK_MS = 15_000
-const ARGS = '[now|context|cost|timeline|settings] | compact | autocompact [on|off] | [warm|guard] [on|off] | [warm|guard] repo [on|off|reset] | [band|line] [show|hide|set|reset] [fields] | line [on|off|auto] | fields'
+const ARGS = '[now|context|cost|timeline|settings] | account [name|reset] | compact | autocompact [on|off] | [warm|guard] [on|off] | [warm|guard] repo [on|off|reset] | [band|line] [show|hide|set|reset] [fields] | line [on|off|auto] | fields'
 /** The fork Keep Warm sends: the session's own prefix plus this, so the reply stays one word. */
 const PING = 'Cache keep-alive ping from the Vitals plugin. Reply with the single word OK and nothing else.'
 
@@ -45,15 +46,17 @@ const engine = atom({ plugin: 'vitals', key: 'engine' } as const, EMPTY_ENGINE, 
 const holds = atom({ plugin: 'vitals', key: 'guard' } as const, null as boolean | null, { shape: 'guard-1' })
 const EMPTY_REPO: RepoPrefs = { root: null, guard: null, warm: null }
 const repo = atom({ plugin: 'vitals', key: 'repo' } as const, EMPTY_REPO, { shape: 'repo-1' })
-const EMPTY_WHO: Who = { label: 'A', configDir: '', email: null, mode: null, style: null, dir: null, branch: null, effort: null, model: null, tzMin: 0 }
-const who = atom({ plugin: 'vitals', key: 'who' } as const, EMPTY_WHO, { shape: 'who-1' })
+const EMPTY_WHO: Who = { label: '', labelFrom: 'single', configDir: '', email: null, mode: null, style: null, dir: null, branch: null, effort: null, model: null, tzMin: 0 }
+const who = atom({ plugin: 'vitals', key: 'who' } as const, EMPTY_WHO, { shape: 'who-2' })
 const EMPTY_LAYOUT: Layout = { band: null, line: null, status: null }
 const layout = atom({ plugin: 'vitals', key: 'layout' } as const, EMPTY_LAYOUT, { shape: 'layout-1' })
 const EMPTY_ALFRED: AlfredSend = { at: 0, ok: false, status: 0, error: null, sent: 0 }
 const alfred = atom({ plugin: 'vitals', key: 'alfred' } as const, EMPTY_ALFRED, { shape: 'alfred-1' })
 const compacted = atom({ plugin: 'vitals', key: 'compacted' } as const, false, { shape: 'compacted-1' })
-const timeline = atom({ plugin: 'vitals', key: 'timeline' } as const, [] as TimelineEntry[], { shape: 'timeline-1' })
-const ctxinfo = atom({ plugin: 'vitals', key: 'ctxinfo' } as const, null as ContextInfo | null, { shape: 'ctxinfo-1' })
+const timeline = atom({ plugin: 'vitals', key: 'timeline' } as const, [] as TimelineEntry[], { shape: 'timeline-2' })
+const ctxinfo = atom({ plugin: 'vitals', key: 'ctxinfo' } as const, null as ContextInfo | null, { shape: 'ctxinfo-2' })
+/** When the transcript was last written, for a session Vitals joined late (a reload, an install mid-session). */
+const resumed = atom({ plugin: 'vitals', key: 'resumed' } as const, null as number | null, { shape: 'resumed-1' })
 const tab = atom({ plugin: 'vitals', key: 'tab' } as const, 'now' as PaneTab, { shape: 'tab-1' })
 const TABS: ReadonlyArray<{ id: PaneTab; label: string }> = [
   { id: 'now', label: 'Now' }, { id: 'context', label: 'Context' }, { id: 'cost', label: 'Cost' }, { id: 'timeline', label: 'Timeline' }, { id: 'settings', label: 'Settings' },
@@ -67,6 +70,8 @@ const SESSIONS_KEY = 'sessions'
 const SESSIONS_MAX = 40
 /** Where /vitals keeps the fields chosen for this account, over the plugin settings. */
 const LAYOUT_KEY = 'layout'
+/** This account's own name, set with /vitals account. */
+const ACCOUNT_KEY = 'account'
 /** The account's last known usage limits, for a new session before its first reply. */
 const LIMITS_KEY = 'limits'
 
@@ -158,6 +163,12 @@ async function snapshot($: EngineInterface, cfg: Settings) {
   // it is cold, only how long it has been idle is unknown. Right after a compaction the engine has no live
   // count until the next reply, so the /context estimate stands in.
   const tokens = live.tokens || info?.total || 0
+  const since = await read($, resumed)
+  if (view.state === 'none' && !wasCompacted && since && tokens) {
+    // Vitals joined a session that was already talking: the transcript's last write is when its last request went.
+    const model = me.model ?? st.last?.model ?? (await $.session.model().catch(() => null))
+    view = viewOf({ lastAt: since, ctx: tokens, window: live.window || info?.window || 0, model, effort: me.effort }, now, ttl)
+  }
   if (view.state === 'none' && (wasCompacted || st.requests > 0) && tokens) {
     const model = me.model ?? st.last?.model ?? (await $.session.model().catch(() => null))
     const cold = viewOf({ lastAt: 1, ctx: tokens, window: live.window || info?.window || 0, model, effort: me.effort }, now, ttl)
@@ -202,7 +213,7 @@ const statusWhere = (s: Snapshot, cfg: Settings): StatusWhere => s.layout.status
 const lineData = (s: Snapshot, cfg: Settings, context: LineData['context']): LineData => {
   const inputs = s.st.read + s.st.write + s.st.uncached
   return {
-    label: s.who.label,
+    label: s.who.labelFrom === 'single' ? '' : s.who.label,
     email: s.who.email,
     mode: s.who.mode,
     style: s.who.style,
@@ -359,19 +370,28 @@ async function refreshContext($: EngineInterface, force = false): Promise<void> 
     const u = await $.session.usage({ breakdown: 'summary' })
     const b = u.context.breakdown
     if (!b) return
-    const byServer = new Map<string, number>()
-    for (const t of b.mcpTools ?? []) byServer.set(t.serverName, (byServer.get(t.serverName) ?? 0) + t.tokens)
+    const byServer = new Map<string, { tokens: number; deferred: number; tools: string[] }>()
+    for (const t of b.mcpTools ?? []) {
+      const s = byServer.get(t.serverName) ?? { tokens: 0, deferred: 0, tools: [] }
+      if (t.isLoaded === false) s.deferred += t.tokens
+      else s.tokens += t.tokens
+      s.tools.push(t.name)
+      byServer.set(t.serverName, s)
+    }
+    const rows = splitRows(b.categories)
     const info: ContextInfo = {
       at: now,
       total: b.totalTokens,
       autoOn: b.isAutoCompactEnabled,
       threshold: b.isAutoCompactEnabled ? (b.autoCompactThreshold ?? null) : null,
       window: b.maxTokens || u.context.window,
-      categories: b.categories
-        .filter(c => c.tokens > 0 && !/^free space$/i.test(c.name))
-        .map(c => ({ name: c.name, tokens: c.tokens }))
-        .sort((x, y) => y.tokens - x.tokens),
-      mcp: [...byServer].map(([server, tokens]) => ({ server, tokens })).sort((x, y) => y.tokens - x.tokens).slice(0, 5),
+      categories: rows.used,
+      deferred: rows.deferred,
+      buffer: rows.buffer,
+      mcp: [...byServer]
+        .map(([server, s]) => ({ server, label: mcpLabel(server, s.tools), tokens: s.tokens, deferred: s.deferred }))
+        .sort((x, y) => y.tokens - x.tokens || y.deferred - x.deferred)
+        .slice(0, 6),
     }
     await update($, ctxinfo, () => info)
   } catch {
@@ -384,11 +404,6 @@ async function remember($: EngineInterface, entry: TimelineEntry): Promise<void>
   await update($, timeline, list => [...list, entry].slice(-TIMELINE_MAX))
 }
 
-/** A message as one short line for the timeline. */
-const firstLine = (text: string): string => {
-  const one = text.replace(/\s+/g, ' ').trim()
-  return one.length > 70 ? `${one.slice(0, 69)}...` : one
-}
 
 /** Keeps when this session's last request started and how big it was, for when the session comes back. */
 async function keepLast($: EngineInterface, f: CacheFacts): Promise<void> {
@@ -538,15 +553,71 @@ async function keepWarmTick($: EngineInterface, cfg: Settings, run: PingRun): Pr
 }
 
 /** The account and place the session runs in, read once a session and kept fresh by the events below. */
+/**
+ * Whether this machine runs more than one Claude Code account: a config folder
+ * other than ~/.claude, or another ~/.claude-* folder next to it. With one
+ * account the band and the line leave its name out.
+ */
+async function hasOtherAccounts($: EngineInterface, configDir: string, home: string | undefined): Promise<boolean> {
+  const h = (home ?? '').replace(/\/+$/, '')
+  if (configDir && configDir.replace(/\/+$/, '') !== `${h}/.claude`) return true
+  try {
+    return (await $.fs.list(h)).some(x => x.kind === 'dir' && /^\.claude[-_][A-Za-z0-9]+$/.test(x.name))
+  } catch {
+    return false
+  }
+}
+
+/** Names this account, or hands it back to the folder's letter. */
+async function setAccountName($: EngineInterface, cfg: Settings, name: string | null): Promise<string> {
+  if (name) await $.store.set(ACCOUNT_KEY, { label: name })
+  else await $.store.delete(ACCOUNT_KEY)
+  await loadWho($, cfg, '')
+  const w = await read($, who)
+  $.ui.invalidate('ui.render')
+  return name ? `This account is now ${w.label}, in every session on it.` : `This account reads as ${accountText(w)} again.`
+}
+
+/** The account as the pane and /vitals account say it. */
+const accountText = (w: Who): string =>
+  w.labelFrom === 'single'
+    ? `${w.label}, the only account here, so the band leaves it out`
+    : w.labelFrom === 'own'
+      ? `${w.label}, named with /vitals account`
+      : w.labelFrom === 'setting'
+        ? `${w.label}, from accountLabels in the plugin settings`
+        : `${w.label}, the letter of its config folder`
+
+/**
+ * When the session's transcript was last written: for a session Vitals joined
+ * late, the time its last request went. Claude Code keeps it under the
+ * account's config folder, in a folder named after the session's directory.
+ */
+async function transcriptAt($: EngineInterface, cwd: string): Promise<number | null> {
+  try {
+    const home = ((await $.env.get('HOME')) ?? '').replace(/\/+$/, '')
+    const dir = ((await $.env.get('CLAUDE_CONFIG_DIR')) || `${home}/.claude`).replace(/\/+$/, '')
+    const id = await $.session.id()
+    const where = cwd || (await $.session.cwd())
+    const at = await $.fs.stat(`${dir}/projects/${where.replace(/[^A-Za-z0-9]/g, '-')}/${id}.jsonl`).catch(() => null)
+    return at && at.size > 0 && at.mtimeMs > 0 ? at.mtimeMs : null
+  } catch {
+    return null
+  }
+}
+
 async function loadWho($: EngineInterface, cfg: Settings, cwd: string): Promise<void> {
   try {
     const configDir = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? ''
     const home = await $.env.get('HOME')
-    const { label } = accountOf(configDir, home, cfg.labels)
+    const own = ((await $.store.get(ACCOUNT_KEY).catch(() => undefined)) as { label?: unknown } | undefined)?.label
+    const acct = accountOf(configDir, home, cfg.labels, own)
+    const labelFrom: Who['labelFrom'] = acct.from === 'folder' && !(await hasOtherAccounts($, configDir, home)) ? 'single' : acct.from
     const effort = await $.settings.read({ key: 'effortLevel' }).catch(() => undefined)
     const where = cwd || (await $.session.cwd())
     const next: Who = {
-      label,
+      label: acct.label,
+      labelFrom,
       configDir,
       email: await emailOf($, configDir, home),
       mode: null,
@@ -627,6 +698,16 @@ async function layoutCommand($: EngineInterface, cfg: Settings, mem: Mem, which:
 async function answerCommand($: EngineInterface, e: CommandRunInput, cfg: Settings, mem: Mem) {
   const [sub, arg, arg2] = (e.args ?? '').trim().toLowerCase().split(/\s+/)
   if (sub === 'fields') return { text: await fieldsText($, cfg) }
+  if (sub === 'account') {
+    const raw = (e.args ?? '').trim().split(/\s+/).slice(1).join(' ').trim()
+    if (!raw) {
+      const w = await read($, who)
+      return { text: `This account: ${accountText(w)}. /vitals account Work names it, /vitals account reset hands it back.` }
+    }
+    const text = await setAccountName($, cfg, raw.toLowerCase() === 'reset' ? null : raw.slice(0, 24))
+    void refreshLine($, cfg, mem)
+    return { text }
+  }
   if (sub === 'compact') {
     // A command holds its turn, and compacting under it is refused: it runs right after, or at the turn's end.
     mem.compactPending = true
@@ -737,6 +818,10 @@ export const register: Register = (on, options) => {
     if (!(await read($, facts))) {
       const kept = await lastOf($)
       if (kept) await update($, facts, () => kept)
+      else {
+        const at = await transcriptAt($, e.cwd)
+        await update($, resumed, () => at)
+      }
     }
     void refreshContext($, true)
     const root = repoRoot(await $.session.root())
@@ -797,7 +882,8 @@ export const register: Register = (on, options) => {
   on('classic.UserPromptSubmit', async ($, e, next) => {
     await seeMode($, cfg, mem, e.permission_mode)
     mem.tools = 0
-    if (!e.source || e.source === 'user') await remember($, { at: await $.clock.now(), who: 'you', text: firstLine(e.prompt), ms: null, tools: null })
+    const entry = promptEntry(e.prompt, e.source, await $.clock.now())
+    if (entry) await remember($, entry)
     return next(e)
   }).catch(($, e, next) => next(e)) // reading the mode never holds up a prompt
   on('classic.Stop', async ($, e, next) => {
@@ -821,11 +907,13 @@ export const register: Register = (on, options) => {
       await update($, compacted, () => false)
       await update($, timeline, () => [])
       await update($, stats, () => EMPTY_STATS)
+      await update($, resumed, () => null)
       await update($, engine, g => ({ ...g, switchedTo: null }))
     } else if (e.source === 'compact') {
       await update($, facts, () => null)
       await update($, compacted, () => true)
       await update($, engine, g => ({ ...g, switchedTo: null }))
+      await update($, resumed, () => null)
     } else if ((e.source === 'resume' || e.source === 'fork') && typeof e.seconds_since_last_response === 'number') {
       const now = await $.clock.now()
       const u = await $.session.usage()
@@ -908,7 +996,8 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
     if (e.agentId) return r
-    await remember($, { at: await $.clock.now(), who: 'claude', text: e.isAborted ? 'Stopped' : null, ms: e.durationMs, tools: mem.tools })
+    const said = firstLine(typeof e.answer === 'string' && e.answer ? e.answer : typeof r?.text === 'string' ? r.text : '')
+    await remember($, { at: await $.clock.now(), who: 'claude', text: e.isAborted ? 'Stopped' : said || null, ms: e.durationMs, tools: mem.tools })
     if (mem.compactPending) $.ui.toast(await compactNow($, mem))
     void refreshContext($)
     const u = await $.session.usage()
@@ -1026,14 +1115,20 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column" flexGrow={1} flexShrink={1}>{p.children}</Box>
       </Box>
     )
-    /** A meter that fills its row: two boxes sized in percent, each clipping a long rule. */
+    /**
+     * A meter of a fixed number of cells, filled and empty, as one line of text.
+     * No box is sized in percent, so a graphical surface never stretches a rule
+     * past its share, and nothing is cut with an ellipsis.
+     */
+    const METER_CELLS = 32
     const Meter = (p: { share: number; color?: string }) => {
-      const filled = Number.isFinite(p.share) ? Math.max(0, Math.min(100, Math.round(p.share * 100))) : 0
+      const share = Number.isFinite(p.share) ? Math.max(0, Math.min(1, p.share)) : 0
+      const filled = share > 0 ? Math.max(1, Math.round(share * METER_CELLS)) : 0
       return (
-        <Box flexDirection="row" flexGrow={1} height={1} overflow="hidden">
-          <Box width={`${filled}%`} flexShrink={0} overflow="hidden"><Text color={p.color} wrap="truncate">{'━'.repeat(300)}</Text></Box>
-          <Box flexGrow={1} flexShrink={1} overflow="hidden"><Text dimColor wrap="truncate">{'─'.repeat(300)}</Text></Box>
-        </Box>
+        <Text wrap="truncate-end">
+          <Text color={p.color}>{'━'.repeat(filled)}</Text>
+          <Text dimColor>{'─'.repeat(METER_CELLS - filled)}</Text>
+        </Text>
       )
     }
 
@@ -1059,6 +1154,13 @@ export const register: Register = (on, options) => {
 
     put('now',
       <Card k="account" title="Account" note={<Text dimColor>{me.label}</Text>} first>
+        <Row k="acct-name" label="Name">
+          <Text>
+            <Text bold>{me.label || 'This account'}</Text>
+            <Text dimColor>{`${dot}${me.labelFrom === 'single' ? 'The only account here, so the band leaves it out' : me.labelFrom === 'own' ? 'Named with /vitals account' : me.labelFrom === 'setting' ? 'From accountLabels' : 'The letter of its config folder'}`}</Text>
+          </Text>
+          <Text dimColor size="footnote">/vitals account Work names it on this account; reset hands it back.</Text>
+        </Row>
         {me.email ? <Row k="acct-email" label="E-mail"><Text wrap="truncate">{me.email}</Text></Row> : null}
         {d.model ? (
           <Row k="acct-model" label="Model">
@@ -1106,7 +1208,7 @@ export const register: Register = (on, options) => {
     put('now',
       <Card k="cache" title="Prompt Cache" note={<Text dimColor>{`TTL ${ttl}`}</Text>}>
         {view.state === 'none' ? (
-          <Row k="state" label="State"><Text dimColor>No request yet</Text></Row>
+          <Row k="state" label="State"><Text dimColor>{st.requests > 0 ? 'Known after the next reply' : 'No request yet'}</Text></Row>
         ) : (
           [
             <Row k="state" label="State">
@@ -1380,24 +1482,44 @@ export const register: Register = (on, options) => {
       </Card>,
     )
     if (info && info.categories.length > 0) {
-      const top = info.categories[0]!.tokens
+      const whole = ctxWindow || info.window || 0
+      const usedSum = info.categories.reduce((n, c) => n + c.tokens, 0)
       put('context',
-        <Card k="ctx-parts" title="What Fills It" note={<Text dimColor>Estimated, as /context</Text>}>
+        <Card k="ctx-parts" title="What Fills It" note={<Text dimColor>{`${tok(usedSum)} in the window, estimated as /context`}</Text>}>
           {info.categories.slice(0, 8).map(c => (
             <Row k={`cat-${c.name}`} label={c.name}>
-              <Text tabular>{tok(c.tokens)}</Text>
-              <Meter share={top ? c.tokens / top : 0} />
+              <Text>
+                <Text tabular>{tok(c.tokens)}</Text>
+                {whole ? <Text dimColor>{`${dot}${pct(c.tokens, whole)}% of the window`}</Text> : null}
+              </Text>
+              <Meter share={whole ? c.tokens / whole : 0} />
             </Row>
           ))}
+          {info.deferred > 0 || info.buffer > 0 ? (
+            <Box marginTop={1} flexDirection="column">
+              {info.deferred > 0 ? <Text dimColor size="footnote">{`Not counted: ${tok(info.deferred)} of tool schemas load only when a tool is searched for (deferred), so they take no room until then.`}</Text> : null}
+              {info.buffer > 0 ? <Text dimColor size="footnote">{`Kept free: ${tok(info.buffer)} that auto-compact reserves to summarise in.`}</Text> : null}
+            </Box>
+          ) : null}
         </Card>,
       )
     }
     if (info && info.mcp.length > 0) {
+      const inWindow = info.mcp.some(m => m.tokens > 0)
       put('context',
-        <Card k="ctx-mcp" title="Heaviest MCP Servers" note={<Text dimColor>Tool schemas</Text>}>
+        <Card k="ctx-mcp" title="Heaviest MCP Servers" note={<Text dimColor>{inWindow ? 'Tool schemas in the window' : 'All load on demand'}</Text>}>
           {info.mcp.map(m => (
-            <Row k={`mcp-${m.server}`} label={m.server}><Text tabular>{tok(m.tokens)}</Text></Row>
+            <Box key={`mcp-${m.server}`} flexDirection="row" justifyContent="space-between" columnGap={2}>
+              <Box flexShrink={1}><Text wrap="truncate-end">{m.label}</Text></Box>
+              <Box flexShrink={0}>
+                <Text>
+                  <Text tabular>{m.tokens > 0 ? tok(m.tokens) : 'none'}</Text>
+                  {m.deferred > 0 ? <Text dimColor>{`${dot}${tok(m.deferred)} on demand`}</Text> : null}
+                </Text>
+              </Box>
+            </Box>
           ))}
+          <Box marginTop={1}><Text dimColor size="footnote">Connectors from claude.ai are named by an id; their tools' names stand in for it.</Text></Box>
         </Card>,
       )
     }
@@ -1416,26 +1538,35 @@ export const register: Register = (on, options) => {
     // Timeline: when each message went and how long each reply took.
     const tl = await read($, timeline)
     put('timeline',
-      <Card k="timeline" title="Timeline" note={<Text dimColor>{`${tl.filter(x => x.who === 'you').length} messages`}</Text>} first>
+      <Card k="timeline" title="Timeline" note={<Text dimColor>{(n => `${n} ${n === 1 ? 'message' : 'messages'} from you`)(tl.filter(x => x.who === 'you').length)}</Text>} first>
         {tl.length === 0 ? (
           <Text dimColor>Nothing yet. Each message you send and each reply shows here with its time.</Text>
         ) : (
           tl.slice(-20).flatMap((x, i, list) => {
             const prev = list[i - 1]
-            const gap = prev && x.who === 'you' ? x.at - prev.at : 0
+            const gap = prev && x.who !== 'claude' ? x.at - prev.at : 0
             const ttlMs = TTL_MS[ttl]
             const rows: RenderChildren[] = []
             if (gap > ttlMs) rows.push(<Text key={`gap-${x.at}`} color="error" size="footnote">{`${dur(gap)} idle, the cache went cold`}</Text>)
             const clock = clockOf(new Date(x.at).toISOString(), x.at, me.tzMin)
             rows.push(
               <Row k={`tl-${x.at}-${x.who}`} label={clock}>
-                {x.who === 'you' ? (
-                  <Text wrap="truncate"><Text bold>You</Text><Text dimColor>{x.text ? `${dot}${x.text}` : ''}</Text></Text>
+                {x.who === 'claude' ? (
+                  <Box flexDirection="column">
+                    <Text>
+                      <Text bold>Claude</Text>
+                      <Text dimColor>{`${x.ms != null ? `${dot}${dur(x.ms)}` : ''}${x.tools ? `${dot}${x.tools} ${x.tools === 1 ? 'tool' : 'tools'}` : ''}`}</Text>
+                    </Text>
+                    {x.text ? <Text dimColor wrap="truncate-end">{x.text}</Text> : null}
+                  </Box>
                 ) : (
-                  <Text>
-                    <Text bold>Claude</Text>
-                    <Text dimColor>{`${dot}${x.text ?? (x.ms != null ? dur(x.ms) : '')}${x.tools ? `${dot}${x.tools} tools` : ''}`}</Text>
-                  </Text>
+                  <Box flexDirection="column">
+                    <Text>
+                      <Text bold color={x.who === 'you' ? undefined : 'suggestion'}>{WHO_NAME[x.who] ?? 'You'}</Text>
+                      {x.from ? <Text dimColor>{`${dot}${x.from}`}</Text> : null}
+                    </Text>
+                    {x.text ? <Text dimColor={x.who !== 'you'} wrap="truncate-end">{x.text}</Text> : null}
+                  </Box>
                 )}
               </Row>,
             )

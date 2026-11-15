@@ -4,7 +4,7 @@ import type { On } from 'claude-code'
 
 import { alfredBody } from '../hooks/alfred'
 import { meterApi, setLatest, shareOf } from '../hooks/share'
-import { accountOf, clockOf, lineOf, loginFileOf, parseFields } from '../hooks/fields'
+import { accountOf, clockOf, lineOf, loginFileOf, parseFields, suggestLabel } from '../hooks/fields'
 import type { LineData } from '../hooks/fields'
 import { viewOf } from '../hooks/cache'
 
@@ -148,7 +148,15 @@ test('the account is read from its config folder, a label wins', () => {
   expect(accountOf(`${HOME}/.claude`, HOME, '').label).toBe('A')
   expect(accountOf(`${HOME}/.claude-b`, HOME, '').label).toBe('B')
   expect(accountOf(`${HOME}/.claude-c/`, HOME, '').label).toBe('C')
-  expect(accountOf(`${HOME}/.claude-work`, HOME, '').label).toBe('WORK')
+  // A folder that carries a name gives it; a letter or a number of the person's own stays a letter.
+  expect(accountOf(`${HOME}/.claude-work`, HOME, '')).toEqual({ label: 'Work', id: '.claude-work', dir: `${HOME}/.claude-work`, from: 'folder' })
+  expect(accountOf(`${HOME}/.claude-my-team`, HOME, '').label).toBe('My Team')
+  expect(accountOf(`${HOME}/.claude-2`, HOME, '')).toMatchObject({ label: '2', from: 'letter' })
+  expect(accountOf(`${HOME}/.claude-b`, HOME, '')).toMatchObject({ id: '.claude-b', from: 'letter' })
+  expect(accountOf(undefined, HOME, '')).toMatchObject({ id: '.claude', from: 'letter' })
+  // Your own name wins over the setting, the setting over the folder.
+  expect(accountOf(`${HOME}/.claude-work`, HOME, '.claude-work=Office', 'Mine')).toMatchObject({ label: 'Mine', from: 'own' })
+  expect(accountOf(`${HOME}/.claude-work`, HOME, 'work=Office')).toMatchObject({ label: 'Office', from: 'setting' })
   expect(accountOf(`${HOME}/.claude-b`, HOME, '.claude-b=Praca, A=1').label).toBe('Praca')
   expect(accountOf(undefined, HOME, '.claude-b=Praca, A=1').label).toBe('1')
   expect(accountOf(`${HOME}/.claude-c`, HOME, '~/.claude-c=3').label).toBe('3')
@@ -414,11 +422,11 @@ test('an Alfred that is down never holds the session, and the pane says so', opt
 })
 
 test('other plugins read the session from $.vitals, never the e-mail', async () => {
-  const who = { label: 'B', configDir: `${HOME}/.claude-b`, email: 'konto-b@example.com', model: 'claude-opus-5-5', effort: 'medium' }
+  const who = { label: 'B', id: '.claude-b', configDir: `${HOME}/.claude-b`, email: 'konto-b@example.com', model: 'claude-opus-5-5', effort: 'medium' }
   const view = viewOf({ lastAt: NOW - 18 * 60_000, ctx: 301_000, window: 1_000_000, model: 'claude-opus-5-5', effort: 'medium' }, NOW, '1h')
   const st = { requests: 4, read: 960, write: 20, uncached: 20, output: 50, savedUsd: 1, coldWrites: 0, coldUsd: 0, last: null }
   const snap = shareOf({ now: NOW, ttl: '1h', view, who, live: { tokens: 300_000, window: 1_000_000 }, share: 30, autoAt: 92, info: { autoOn: true }, advice: null, ls: LIMITS_B, st, total: 3.5 }, 'sess-1')
-  expect(snap.account).toEqual({ label: 'B', configDir: `${HOME}/.claude-b` })
+  expect(snap.account).toEqual({ label: 'B', id: '.claude-b', configDir: `${HOME}/.claude-b` })
   expect(snap.cache.state).toBe('warm')
   expect(snap.cache.leftMs).toBe(42 * 60_000)
   expect(snap.context).toEqual({ tokens: 301_000, window: 1_000_000, percent: 30, autoCompactOn: true, autoCompactAtPercent: 92, advice: null })
@@ -429,14 +437,12 @@ test('other plugins read the session from $.vitals, never the e-mail', async () 
   expect(await meterApi().snapshot()).toEqual(snap)
 })
 
-test('the old /cache answers as /vitals does', async ($, on) => {
-  world(on, { limits: LIMITS_B })
-  mock.clock(on, { now: NOW })
-  await start($)
-  const viaOld = ((await $.command.run({ command: 'cache', args: 'fields' } as never)) as { text?: string }).text ?? ''
-  const viaNew = ((await $.command.run({ command: 'vitals', args: 'fields' } as never)) as { text?: string }).text ?? ''
-  expect(viaOld).toContain('Band:')
-  expect(viaOld).toBe(viaNew)
+test('a label is offered from the organization, else the e-mail domain; a public mail host reads Personal', () => {
+  expect(suggestLabel('ann@example.com', 'Acme')).toBe('Acme')
+  // An organization named after the address, or "...'s Organization", names nothing.
+  expect(suggestLabel('ann@acme-corp.example', "ann@acme-corp.example's Organization")).toBe('Acme Corp')
+  expect(suggestLabel('ann@gmail.com', null)).toBe('Personal')
+  expect(suggestLabel(null, null)).toBe(null)
 })
 
 test('with one account on the machine its name is left out; /vitals account names it, reset hands it back', options(ACCOUNT_LINE), async ($, on) => {
@@ -445,7 +451,8 @@ test('with one account on the machine its name is left out; /vitals account name
   await start($)
   expect(seen.status.at(-1)).toBe('konto-a@example.com · Opus 5.5 · medium · ctx 30%')
   expect(await cache($, 'account')).toContain('the only account here')
-  expect(await cache($, 'account Work Laptop')).toBe('This account is now Work Laptop, in every session on it.')
+  expect(await cache($, 'account')).toContain('ID     .claude')
+  expect(await cache($, 'account Work Laptop')).toBe('This account (.claude) is now Work Laptop, in every session on it.')
   await settle($)
   expect(seen.status.at(-1)).toBe('Work Laptop · konto-a@example.com · Opus 5.5 · medium · ctx 30%')
   expect(seen.store.get('account')).toEqual({ label: 'Work Laptop' })
@@ -461,4 +468,54 @@ test('a session Vitals joins late reads its cache from when the transcript was l
   await start($)
   await settle($)
   expect(seen.status.at(-1)).toBe('● Warm 40m · ctx 30%')
+})
+
+test('an account with only a letter is offered a label from its login; one press labels it, Reset hands it back', options({ statusLine: 'on', lineFields: 'account, model' }), async ($, on) => {
+  const seen = world(on, { configDir: `${HOME}/.claude-b`, email: 'konto-b@acme-corp.example' })
+  mock.clock(on, { now: NOW })
+  await start($)
+  await settle($)
+  expect(seen.status.at(-1)).toBe('B · Opus 5.5')
+  const pane = { plugin: 'vitals', component: 'Pane', requestId: 'vitals', props: { title: 'Vitals', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
+  const ui = await $.ui.mount({ ...pane, surface: 'desktop' })
+  // The label and the id are two things: the label is yours to change, the id is the folder.
+  expect(await ui.find({ type: 'Text', text: '.claude-b' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /A letter, as its config folder carries no name/ })).toBeDefined()
+  const keys = async (u: typeof ui) => (await u.findAll({ type: 'Button' })).map(b => (b as { key?: string }).key)
+  expect(await keys(ui)).not.toContain('acct-reset')
+  expect(await keys(ui)).toContain('acct-suggested')
+  await ui.press({ key: 'acct-suggested' })
+  await settle($)
+  expect(seen.store.get('account')).toEqual({ label: 'Acme Corp' })
+  expect(seen.status.at(-1)).toBe('Acme Corp · Opus 5.5')
+  await ui.unmount()
+  const named = await $.ui.mount({ ...pane, surface: 'desktop' })
+  expect(await named.find({ type: 'Text', text: /Your own name for it/ })).toBeDefined()
+  expect(await keys(named)).not.toContain('acct-suggested')
+  await named.press({ key: 'acct-reset' })
+  await settle($)
+  expect(seen.store.get('account')).toBeUndefined()
+  expect(seen.status.at(-1)).toBe('B · Opus 5.5')
+  await named.unmount()
+})
+
+test('a config folder that carries a name labels the account by it', options({ statusLine: 'on', lineFields: 'account, model' }), async ($, on) => {
+  const seen = world(on, { configDir: `${HOME}/.claude-work` })
+  mock.clock(on, { now: NOW })
+  await start($)
+  await settle($)
+  expect(seen.status.at(-1)).toBe('Work · Opus 5.5')
+  expect(await cache($, 'account')).toContain('Label  Work: the name in its config folder')
+})
+
+test('the pane takes a label typed into it, as /vitals account does', options({ statusLine: 'on', lineFields: 'account, model' }), async ($, on) => {
+  const seen = world(on, { configDir: `${HOME}/.claude-b` })
+  mock.clock(on, { now: NOW })
+  await start($)
+  const ui = await $.ui.mount({ plugin: 'vitals', component: 'Pane', requestId: 'vitals', surface: 'desktop', props: { title: 'Vitals', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as never)
+  await ui.input({ key: 'acct-input', text: '  Client   Work  ', kind: 'submit' })
+  await settle($)
+  await ui.unmount()
+  expect(seen.store.get('account')).toEqual({ label: 'Client Work' })
+  expect(seen.status.at(-1)).toBe('Client Work · Opus 5.5')
 })

@@ -2,6 +2,30 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-11-15
+
+### Fixed
+
+- After a compaction the band read "Cold Compacted", as if the cache had been compacted. It is the conversation that is compacted and the cache that is cold because of it: the band now reads "Cold After compaction", the status line "Cold after compaction", and a cold cache always says why (idle 1h 06m, model changed, after a break).
+- A cold cache takes more room in the band (it adds the re-cache price), which pushed the context out of a band of ordinary width. The context now stays as long as the account and the main limit; the next message cost and the second limit go first.
+- The timeline cut each message at the pane's edge. Messages now wrap, up to 180 characters and then three dots, and meters are as wide as the pane leaves, so a narrow pane cuts nothing.
+- The footnote about connectors named by an id showed even when every server had a name.
+
+### Changed
+
+- The timeline lists the newest message first. A reply says "took 16m" where it said "16m", and a break that let the cache go cold stands under the message that paid for it. Entries older than a day carry their weekday.
+- An account now has an ID (its config folder's name, which never changes) and a label (what the band shows, yours to set). A folder that carries a name labels the account by it (`.claude-work` is Work, where it was WORK); a folder with none gets a letter. The pane's Now tab has a field to rename the account and a Reset button, and offers a label from the login's organization or e-mail domain to an account that has only a letter. `/vitals account` prints the label, its source and the ID. `$.vitals.snapshot()` carries `account.id`.
+- The pane's Now tab opens on what changes (prompt cache, next message, limits); the account and the session stand below.
+- The status line script's fallback, before the plugin has written a session's line, no longer prints an account letter: the label is the plugin's to say.
+
+### Added
+
+- A plugin icon.
+
+### Removed
+
+- The old `/cache` command, kept since the rename from Cache Meter. `/vitals` takes every argument it did.
+
 ## [0.6.1] - 2026-11-15
 
 ### Fixed

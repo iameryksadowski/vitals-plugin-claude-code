@@ -13,7 +13,7 @@ export type Field = (typeof FIELDS)[number]
 
 /** What each field shows, for `/vitals fields` and the README. */
 export const FIELD_INFO: Record<Field, string> = {
-  account: 'Account name: your own (/vitals account Work), else a letter from the config folder (A, B, C) when there are several; hidden with one account',
+  account: 'Account label: your own (/vitals account Work), else the name in its config folder (.claude-work is Work) or a letter (A, B, C); hidden with one account',
   email: 'E-mail of the signed-in account (shown only, never sent anywhere)',
   model: 'Model with its version (Opus 5.5)',
   effort: 'Reasoning effort (low, medium, high, xhigh, max)',
@@ -81,34 +81,67 @@ export const fieldsOr = (text: unknown, fallback: readonly Field[]): Field[] => 
   return fields.length > 0 ? fields : [...fallback]
 }
 
-/**
- * The account a session runs under, read from its config folder: the default
- * `~/.claude` is A, `~/.claude-b` is B, `~/.claude-work` is WORK. `labels`
- * (`.claude-b=Work, A=1`) names a folder by its full path, its name with or
- * without the dot, or its default letter.
- */
-export type AccountFrom = 'own' | 'setting' | 'folder'
+/** `my-team` as `My Team`: a folder's own words, each capitalised. */
+const titleWords = (text: string): string =>
+  text.split(/[-_.\s]+/).filter(Boolean).map(w => w[0]!.toUpperCase() + w.slice(1)).join(' ')
 
+/**
+ * Where an account's label comes from, strongest first: the person's own name
+ * for it (`/vitals account Work`), the `accountLabels` setting, a name the
+ * config folder itself carries (`.claude-work` is Work), else a letter
+ * (`.claude` is A, `.claude-b` is B).
+ */
+export type AccountFrom = 'own' | 'setting' | 'folder' | 'letter'
+
+/**
+ * The account a session runs under. Its id is its config folder's name
+ * (`.claude`, `.claude-b`): what tells one account from another on this
+ * machine and never changes. Its label is what the band shows, and anyone can
+ * set it. `labels` (`.claude-b=Work, A=1`) names a folder by its full path,
+ * its name with or without the dot, or its default label.
+ */
 export const accountOf = (
   configDir: string | undefined,
   home: string | undefined,
   labels: unknown,
   own?: unknown,
-): { label: string; dir: string; from: AccountFrom } => {
+): { label: string; id: string; dir: string; from: AccountFrom } => {
   const h = (home ?? '').replace(/\/+$/, '')
   const dir = (configDir ?? '').replace(/\/+$/, '') || `${h}/.claude`
-  const base = dir.split('/').pop() ?? dir
-  const letter = base === '.claude' || base === 'claude' ? 'A' : base.replace(/^\.?claude[-_.]?/i, '').replace(/^\./, '').toUpperCase() || base.toUpperCase()
-  if (typeof own === 'string' && own.trim()) return { label: own.trim(), dir, from: 'own' }
-  const keys = new Set([dir, base, base.replace(/^\./, ''), letter.toLowerCase()])
+  const id = dir.split('/').pop() || dir
+  const isDefault = id === '.claude' || id === 'claude'
+  const rest = isDefault ? '' : id.replace(/^\.?claude[-_.]?/i, '').replace(/^\./, '') || id.replace(/^\./, '')
+  // One or two characters, or a number, is a letter of the person's own (B, C, 2); anything longer is a name.
+  const isLetter = isDefault || rest.length <= 2 || /^\d+$/.test(rest)
+  const auto = isDefault ? 'A' : isLetter ? rest.toUpperCase() : titleWords(rest)
+  if (typeof own === 'string' && own.trim()) return { label: own.trim(), id, dir, from: 'own' }
+  const keys = new Set([dir, id, id.replace(/^\./, ''), auto.toLowerCase()])
   for (const pair of String(labels ?? '').split(/[,;\n]+/)) {
     const at = pair.indexOf('=')
     if (at < 0) continue
     const key = pair.slice(0, at).trim().replace(/^~(?=\/)/, h).replace(/\/+$/, '')
     const value = pair.slice(at + 1).trim()
-    if (value && (keys.has(key) || keys.has(key.toLowerCase()))) return { label: value, dir, from: 'setting' }
+    if (value && (keys.has(key) || keys.has(key.toLowerCase()))) return { label: value, id, dir, from: 'setting' }
   }
-  return { label: letter, dir, from: 'folder' }
+  return { label: auto, id, dir, from: isLetter ? 'letter' : 'folder' }
+}
+
+/** Mail hosts anyone can sign up at: an address there says nothing about whose account it is. */
+const PUBLIC_MAIL = /^(gmail|googlemail|outlook|hotmail|live|msn|icloud|me|mac|yahoo|ymail|proton|protonmail|pm|gmx|aol|fastmail|hey|zoho|mail|wp|o2|onet|interia|tlen)\./
+
+/**
+ * A label worth offering for an account that has only a letter: its
+ * organization's name, else the company in its e-mail's domain, else
+ * `Personal` for a public mail host. Only offered; the person picks it.
+ */
+export const suggestLabel = (email: string | null | undefined, organization?: unknown): string | null => {
+  const org = typeof organization === 'string' ? organization.trim() : ''
+  if (org && !org.includes('@') && !/organi[sz]ation$/i.test(org) && org.length <= 24) return org
+  const domain = (email ?? '').split('@')[1]?.toLowerCase()
+  if (!domain) return null
+  if (PUBLIC_MAIL.test(domain)) return 'Personal'
+  const company = domain.split('.')[0]
+  return company ? titleWords(company) : null
 }
 
 /** Where the account keeps its login record: `~/.claude.json` for the default folder, else inside the folder. */
@@ -164,7 +197,7 @@ export type LineData = {
   tzMin: number
 }
 
-const MODE_NAME: Record<string, string> = {
+export const MODE_NAME: Record<string, string> = {
   default: 'default', acceptEdits: 'accept edits', plan: 'plan', auto: 'auto', bypassPermissions: 'bypass', dontAsk: "don't ask",
 }
 const LIMIT_SHORT: Record<string, string> = { five_hour: '5h', seven_day: '7d', spend_limit: 'spend' }
@@ -208,14 +241,16 @@ export const piecesOf = (f: Field, d: LineData, compact: boolean): Piece[] | nul
         if (compact) return null
         return [{ t: '○', dim: true }, { t: 'Prompt Cache', bold: true }, { t: d.requests > 0 ? 'Known after the next reply' : 'Waiting for the first reply', dim: true }]
       }
-      const idle = v.why === 'compacted' ? 'Compacted' : v.why === 'unknown' ? 'After a break' : `Idle ${dur(v.idleMs)}`
-      const when = d.switched ? 'Model changed' : cold ? idle : `${dur(v.leftMs)} left`
-      if (compact) return [{ t: '●', color: tone }, { t: cold ? 'Cold' : 'Warm', color: tone }, { t: d.switched ? 'model changed' : cold ? idle.toLowerCase().replace(/^idle /, '') : dur(v.leftMs) }]
+      // Why it is cold, never a word that could be read as the cache's own state: the conversation is
+      // what gets compacted, the cache is cold because of it.
+      const why = d.switched ? 'model changed' : v.why === 'compacted' ? 'after compaction' : v.why === 'unknown' ? 'after a break' : `idle ${dur(v.idleMs)}`
+      const when = cold ? why : `${dur(v.leftMs)} left`
+      if (compact) return [{ t: '●', color: tone }, { t: cold ? 'Cold' : 'Warm', color: tone }, { t: cold ? why : dur(v.leftMs) }]
       return [
         { t: '●', color: tone },
         { t: 'Cache', dim: true },
         { t: cold ? 'Cold' : 'Warm', color: tone, bold: true },
-        d.switched || cold ? { t: when, dim: true } : { t: when, color: v.state === 'soon' ? tone : undefined },
+        cold ? { t: when[0]!.toUpperCase() + when.slice(1), dim: true } : { t: when, color: v.state === 'soon' ? tone : undefined },
         ...(d.warmOn && !cold ? [{ t: 'Kept Warm', dim: true }] : []),
       ]
     }
@@ -283,6 +318,6 @@ export const lineOf = (fields: readonly Field[], d: LineData): string => {
 
 /** How long a field may stay in the band as it narrows: the lower, the longer. */
 export const PRIO: Record<Field, number> = {
-  cache: 0, account: 1, '5h': 3, '7d': 3, spend: 3, next: 2, context: 3, compact: 2, model: 4, ifcold: 4, hit: 5, effort: 5,
+  cache: 0, account: 1, context: 1, '5h': 3, '7d': 3, spend: 3, next: 2, compact: 2, model: 4, ifcold: 4, hit: 5, effort: 5,
   session: 6, mode: 6, branch: 7, dir: 8, style: 8, email: 9,
 }

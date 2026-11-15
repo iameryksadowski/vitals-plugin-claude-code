@@ -2,7 +2,7 @@
 
 **The session's vital signs for Claude Code**, in one row above the prompt: is the prompt cache still warm, what will the next message cost, how much of your usage limit is left and when it resets, how full the context is and whether now is a good moment to compact. Everything else is one click away in a side pane.
 
-[![Version](https://img.shields.io/badge/version-0.6.1-10b981)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.7.0-10b981)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-10b981)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-2.1.287%2B-18181b)](https://github.com/anthropics/claude-code)
 
@@ -32,7 +32,7 @@ Requires Claude Code 2.1.287 or later (plugins with a hooks module, also called 
 <details>
 <summary>Coming from Cache Meter</summary>
 
-Vitals was called Cache Meter until 0.6.0. Run `claude plugin uninstall cache-meter@cachemeter` and `claude plugin marketplace remove cachemeter`, install as above, and point the account's `statusLine` at the new script path. `/cache` still works as `/vitals`. Settings start fresh under the new name.
+Vitals was called Cache Meter until 0.6.0. Run `claude plugin uninstall cache-meter@cachemeter` and `claude plugin marketplace remove cachemeter`, install as above, and point the account's `statusLine` at the new script path. The command is `/vitals` (the old `/cache` went in 0.7.0). Settings start fresh under the new name.
 
 </details>
 
@@ -46,7 +46,7 @@ Vitals was called Cache Meter until 0.6.0. Run `claude plugin uninstall cache-me
 | **Context** | Tokens in the context and their share of the window. |
 | **Compact** | A hint, with the reason, only when compacting is worth it. See [Compaction](#compaction). |
 
-As the window narrows, parts drop out strictly by priority: the cache state stays longest, then the account and its main limit, then the next message cost, the compact hint and the context.
+As the window narrows, parts drop out strictly by priority: the cache state stays longest, then the account, its main limit and the context, then the next message cost and the compact hint.
 
 ## The pane
 
@@ -54,10 +54,10 @@ As the window narrows, parts drop out strictly by priority: the cache state stay
 
 | Tab | Shows |
 | --- | --- |
-| Now | The account (e-mail, model, effort, mode, output style, folder and branch), the prompt cache with its TTL bar, what the next message costs warm and cold, every usage limit |
+| Now | The prompt cache with its TTL bar, what the next message costs warm and cold, every usage limit, the account (its label with a field to rename it, its id, the e-mail) and the session (mode, output style, folder and branch) |
 | Context | How full the context is, auto-compact (on or off, and at what share) with a switch, the compact advice with **Compact Now**, what fills the window (as `/context` counts it, estimated locally; tool schemas loaded on demand and the auto-compact reserve are listed apart, since they take no room) and the heaviest MCP servers, connectors named by their tools |
 | Cost | Requests, cache hit rate, tokens read, written and uncached, what caching saved, cold writes paid, the last request, the session total |
-| Timeline | When each message went and how it opens, who sent it (you, another Claude session, a finished task, a scheduled prompt or the app), how long each reply took with its opening line and tool count, and the breaks after which the cache went cold |
+| Timeline | The newest first: when each message went and how it opens, who sent it (you, another Claude session, a finished task, a scheduled prompt or the app), how long each reply took with its opening line and tool count, and the breaks after which the cache had gone cold |
 | Settings | Where the status line is drawn, Keep Warm, the cold send guard, the compact hint, the Alfred send |
 
 ## Compaction
@@ -95,7 +95,7 @@ To use it in the terminal, add this to the account's `settings.json` (`~/.claude
 }
 ```
 
-Before the plugin has written a session's line (its first moment, or with the plugin off), the script prints a short line from the status line JSON Claude Code hands it: account, model, limits, context. The script sends nothing anywhere. It needs `jq` for that fallback; without it, it prints only the account.
+Before the plugin has written a session's line (its first moment, or with the plugin off), the script prints a short line from the status line JSON Claude Code hands it: model, limits, context. The script sends nothing anywhere. It needs `jq` for that fallback; without it, it prints nothing until the plugin's line is there.
 
 ## Fields
 
@@ -103,7 +103,7 @@ The band and the status line take the same fields. The band keeps them by priori
 
 | Field | Shows |
 | --- | --- |
-| `account` | The account's name, when there is more than one (see [Accounts](#accounts)) |
+| `account` | The account's label, when there is more than one account (see [Accounts](#accounts)) |
 | `email` | E-mail of the signed-in account, from its login record. Shown only, never sent |
 | `model` | Model with its version (Opus 5.5) |
 | `effort` | Reasoning effort |
@@ -139,13 +139,21 @@ Or in `/plugin configure vitals@vitals`: `bandFields`, `lineFields`, `statusLine
 
 Most people run Claude Code on one account, and then Vitals leaves the account out: there is nothing to tell apart. If you run several (each in its own config folder through `CLAUDE_CONFIG_DIR`, such as `~/.claude` and `~/.claude-work`), each session shows which one it is on.
 
-| Name | Comes from |
-| --- | --- |
-| Your own | `/vitals account Work`, kept for every session on that account. `/vitals account reset` hands it back. |
-| From the settings | `accountLabels` in `/plugin configure vitals@vitals`, such as `.claude=Personal, .claude-work=Work` |
-| Automatic | A letter from the config folder: `~/.claude` is A, `~/.claude-b` is B, `~/.claude-work` is WORK |
+An account has two things:
 
-`/vitals account` says which one is in use, and the pane's Now tab shows it too.
+- **ID**: the name of its config folder (`.claude`, `.claude-work`). It tells accounts apart on your machine and never changes.
+- **Label**: what the band and the status line show. It is yours to set, and the first of these that exists wins:
+
+| Label | Comes from |
+| --- | --- |
+| Your own | Type it into **Rename** on the pane's Now tab, or run `/vitals account Work`. Kept for every session on that account; **Reset** or `/vitals account reset` hands it back. |
+| From the settings | `accountLabels` in `/plugin configure vitals@vitals`, such as `.claude=Personal, .claude-work=Work` |
+| The folder's name | A config folder that carries a name gives it: `~/.claude-work` is Work, `~/.claude-my-team` is My Team |
+| A letter | A folder with no name in it: `~/.claude` is A, `~/.claude-b` is B, `~/.claude-2` is 2 |
+
+An account that has only a letter is offered a label in the pane, taken from the login's organization or the company in its e-mail's domain (Personal for a public mail host). One press takes it; nothing is set until you do.
+
+`/vitals account` prints the label, where it comes from and the ID.
 
 ## Keep Warm
 
@@ -185,7 +193,7 @@ All in `/plugin configure vitals@vitals`, stored as `pluginConfigs` in your user
 | `resetStyle` | `auto`, `countdown`, `clock`, `both` | `auto`: a countdown, `6d 15h` or `14h 20m` |
 | `compactHint` | `on`, `off` | `on` |
 | `compactAt` | `30` to `70` | `50`: with a cold cache, the context share from which the hint shows |
-| `accountLabels` | `.claude=Personal, .claude-work=Work` | a letter from the folder, or nothing with one account |
+| `accountLabels` | `.claude=Personal, .claude-work=Work` | the folder's name or a letter, or nothing with one account |
 | `alfred` | `off`, `on` | `off` |
 | `alfredHome` | a folder | `~/Development/alfred-app` |
 | `alfredUrl` | a URL | `http://127.0.0.1:8765` |
@@ -196,7 +204,7 @@ Vitals adds `$.vitals` to the engine, so another plugin can read this session's 
 
 ```ts
 const s = await $.vitals.snapshot()
-// s.account.label, s.cache.state, s.cache.nextUsd, s.context.percent,
+// s.account.label, s.account.id, s.cache.state, s.cache.nextUsd, s.context.percent,
 // s.context.autoCompactAtPercent, s.context.advice,
 // s.limits (kind, percentUsed, resetsAt), s.session.hitPercent, s.session.usd
 ```

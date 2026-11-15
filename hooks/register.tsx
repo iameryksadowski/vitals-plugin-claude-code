@@ -5,11 +5,11 @@ import { meterApi, setLatest, shareOf } from './share'
 import type { AlfredSend, CacheFacts, ContextInfo, EngineCache, KeepWarm, Layout, Limit, PaneTab, RepoPrefs, Stats, TimelineEntry, Who } from '../types'
 import { ALFRED_EVERY_MS, alfredBody, homePath } from './alfred'
 import { adviceOf, autoPct, mcpLabel, sharePct, splitRows } from './context'
-import { WHO_NAME, firstLine, promptEntry } from './timeline'
+import { WHO_NAME, firstLine, promptEntry, stampOf } from './timeline'
 import { SEP, fit, spaced } from './band'
 import type { Segment } from './band'
 import {
-  BAND_DEFAULT, FIELDS, FIELD_INFO, LINE_DEFAULT, PRIO, accountOf, clockOf, fieldsOr, lineOf, loginFileOf, parseFields, piecesOf,
+  BAND_DEFAULT, FIELDS, FIELD_INFO, LINE_DEFAULT, MODE_NAME, PRIO, accountOf, fieldsOr, lineOf, loginFileOf, parseFields, piecesOf, suggestLabel,
 } from './fields'
 import type { Field, LineData, ResetStyle } from './fields'
 import {
@@ -46,8 +46,8 @@ const engine = atom({ plugin: 'vitals', key: 'engine' } as const, EMPTY_ENGINE, 
 const holds = atom({ plugin: 'vitals', key: 'guard' } as const, null as boolean | null, { shape: 'guard-1' })
 const EMPTY_REPO: RepoPrefs = { root: null, guard: null, warm: null }
 const repo = atom({ plugin: 'vitals', key: 'repo' } as const, EMPTY_REPO, { shape: 'repo-1' })
-const EMPTY_WHO: Who = { label: '', labelFrom: 'single', configDir: '', email: null, mode: null, style: null, dir: null, branch: null, effort: null, model: null, tzMin: 0 }
-const who = atom({ plugin: 'vitals', key: 'who' } as const, EMPTY_WHO, { shape: 'who-2' })
+const EMPTY_WHO: Who = { label: '', labelFrom: 'single', id: '', suggested: null, configDir: '', email: null, mode: null, style: null, dir: null, branch: null, effort: null, model: null, tzMin: 0 }
+const who = atom({ plugin: 'vitals', key: 'who' } as const, EMPTY_WHO, { shape: 'who-3' })
 const EMPTY_LAYOUT: Layout = { band: null, line: null, status: null }
 const layout = atom({ plugin: 'vitals', key: 'layout' } as const, EMPTY_LAYOUT, { shape: 'layout-1' })
 const EMPTY_ALFRED: AlfredSend = { at: 0, ok: false, status: 0, error: null, sent: 0 }
@@ -62,7 +62,9 @@ const TABS: ReadonlyArray<{ id: PaneTab; label: string }> = [
   { id: 'now', label: 'Now' }, { id: 'context', label: 'Context' }, { id: 'cost', label: 'Cost' }, { id: 'timeline', label: 'Timeline' }, { id: 'settings', label: 'Settings' },
 ]
 /** Entries the timeline keeps: the newest. */
-const TIMELINE_MAX = 60
+const TIMELINE_MAX = 80
+/** Entries the pane lists, the newest first. */
+const TIMELINE_SHOWN = 30
 /** How often the /context-style breakdown is read again, at most. */
 const CTX_EVERY_MS = 60_000
 /** The last request of each recent session, so a session that comes back knows how long the cache has been idle. */
@@ -70,8 +72,10 @@ const SESSIONS_KEY = 'sessions'
 const SESSIONS_MAX = 40
 /** Where /vitals keeps the fields chosen for this account, over the plugin settings. */
 const LAYOUT_KEY = 'layout'
-/** This account's own name, set with /vitals account. */
+/** This account's own label, set with /vitals account or in the pane. */
 const ACCOUNT_KEY = 'account'
+/** The longest label an account takes. */
+const ACCOUNT_MAX = 24
 /** The account's last known usage limits, for a new session before its first reply. */
 const LIMITS_KEY = 'limits'
 
@@ -236,6 +240,9 @@ const lineData = (s: Snapshot, cfg: Settings, context: LineData['context']): Lin
   }
 }
 
+/** A sentence's first letter raised. */
+const cap = (text: string): string => (text ? text[0]!.toUpperCase() + text.slice(1) : text)
+
 /** A folder's last part: `/work/app` is `app`. */
 const baseName = (p: string) => p.replace(/\/+$/, '').split('/').pop() || p
 
@@ -249,18 +256,19 @@ async function branchOf($: EngineInterface, cwd: string): Promise<string | null>
   }
 }
 
-/** The account's e-mail from its login record, for showing only. */
-async function emailOf($: EngineInterface, configDir: string | undefined, home: string | undefined): Promise<string | null> {
+/** The account's e-mail and organization from its login record, for showing only. */
+async function loginOf($: EngineInterface, configDir: string | undefined, home: string | undefined): Promise<{ email: string | null; organization: string | null }> {
   for (const file of loginFileOf(configDir, home)) {
     try {
-      const j = JSON.parse(await $.fs.read(file)) as { oauthAccount?: { emailAddress?: unknown } }
+      const j = JSON.parse(await $.fs.read(file)) as { oauthAccount?: { emailAddress?: unknown; organizationName?: unknown } }
       const e = j.oauthAccount?.emailAddress
-      if (typeof e === 'string' && e.includes('@')) return e
+      const o = j.oauthAccount?.organizationName
+      if (typeof e === 'string' && e.includes('@')) return { email: e, organization: typeof o === 'string' ? o : null }
     } catch {
       // a missing or unreadable record shows no e-mail
     }
   }
-  return null
+  return { email: null, organization: null }
 }
 
 /** Minutes east of UTC, as the host's clock reads them (`date +%z`), for reset times on the clock. */
@@ -568,25 +576,33 @@ async function hasOtherAccounts($: EngineInterface, configDir: string, home: str
   }
 }
 
-/** Names this account, or hands it back to the folder's letter. */
+/** Labels this account, or hands the label back to its folder. */
 async function setAccountName($: EngineInterface, cfg: Settings, name: string | null): Promise<string> {
   if (name) await $.store.set(ACCOUNT_KEY, { label: name })
   else await $.store.delete(ACCOUNT_KEY)
   await loadWho($, cfg, '')
   const w = await read($, who)
   $.ui.invalidate('ui.render')
-  return name ? `This account is now ${w.label}, in every session on it.` : `This account reads as ${accountText(w)} again.`
+  return name ? `This account (${w.id}) is now ${w.label}, in every session on it.` : `This account (${w.id}) is ${w.label} again: ${LABEL_FROM[w.labelFrom]}.`
 }
 
-/** The account as the pane and /vitals account say it. */
+/** Where the label comes from, as the pane and /vitals account say it. */
+const LABEL_FROM: Record<Who['labelFrom'], string> = {
+  own: 'your own name for it',
+  setting: 'from accountLabels in the plugin settings',
+  folder: 'the name in its config folder',
+  letter: 'a letter, as its config folder carries no name',
+  single: 'the only account here, so the band leaves it out',
+}
+
+/** `/vitals account` with nothing after it: the label, where it comes from, the id, and how to change it. */
 const accountText = (w: Who): string =>
-  w.labelFrom === 'single'
-    ? `${w.label}, the only account here, so the band leaves it out`
-    : w.labelFrom === 'own'
-      ? `${w.label}, named with /vitals account`
-      : w.labelFrom === 'setting'
-        ? `${w.label}, from accountLabels in the plugin settings`
-        : `${w.label}, the letter of its config folder`
+  [
+    `Label  ${w.label || '(none)'}: ${LABEL_FROM[w.labelFrom]}`,
+    `ID     ${w.id} (the account's config folder, ${w.configDir || '~/.claude'})`,
+    ...(w.suggested && (w.labelFrom === 'letter' || w.labelFrom === 'single') ? [`Idea   /vitals account ${w.suggested}`] : []),
+    '/vitals account <name> labels it (Work, Personal, anything up to 24 characters); /vitals account reset hands it back.',
+  ].join('\n')
 
 /**
  * When the session's transcript was last written: for a session Vitals joined
@@ -612,14 +628,19 @@ async function loadWho($: EngineInterface, cfg: Settings, cwd: string): Promise<
     const home = await $.env.get('HOME')
     const own = ((await $.store.get(ACCOUNT_KEY).catch(() => undefined)) as { label?: unknown } | undefined)?.label
     const acct = accountOf(configDir, home, cfg.labels, own)
-    const labelFrom: Who['labelFrom'] = acct.from === 'folder' && !(await hasOtherAccounts($, configDir, home)) ? 'single' : acct.from
+    const labelFrom: Who['labelFrom'] = acct.from === 'letter' && !(await hasOtherAccounts($, configDir, home)) ? 'single' : acct.from
+    const login = await loginOf($, configDir, home)
+    const idea = suggestLabel(login.email, login.organization)
     const effort = await $.settings.read({ key: 'effortLevel' }).catch(() => undefined)
     const where = cwd || (await $.session.cwd())
     const next: Who = {
       label: acct.label,
       labelFrom,
+      id: acct.id,
+      // Offered only where it would say more than the letter does.
+      suggested: idea && idea.toLowerCase() !== acct.label.toLowerCase() ? idea : null,
       configDir,
-      email: await emailOf($, configDir, home),
+      email: login.email,
       mode: null,
       style: null,
       dir: baseName(where),
@@ -694,7 +715,7 @@ async function layoutCommand($: EngineInterface, cfg: Settings, mem: Mem, which:
   ].join('\n')
 }
 
-/** `/vitals` (and the old `/cache`): the pane, a tab of it, or one of the switches. */
+/** `/vitals`: the pane, a tab of it, or one of the switches. */
 async function answerCommand($: EngineInterface, e: CommandRunInput, cfg: Settings, mem: Mem) {
   const [sub, arg, arg2] = (e.args ?? '').trim().toLowerCase().split(/\s+/)
   if (sub === 'fields') return { text: await fieldsText($, cfg) }
@@ -702,9 +723,9 @@ async function answerCommand($: EngineInterface, e: CommandRunInput, cfg: Settin
     const raw = (e.args ?? '').trim().split(/\s+/).slice(1).join(' ').trim()
     if (!raw) {
       const w = await read($, who)
-      return { text: `This account: ${accountText(w)}. /vitals account Work names it, /vitals account reset hands it back.` }
+      return { text: accountText(w) }
     }
-    const text = await setAccountName($, cfg, raw.toLowerCase() === 'reset' ? null : raw.slice(0, 24))
+    const text = await setAccountName($, cfg, raw.toLowerCase() === 'reset' ? null : raw.slice(0, ACCOUNT_MAX))
     void refreshLine($, cfg, mem)
     return { text }
   }
@@ -755,7 +776,7 @@ async function answerCommand($: EngineInterface, e: CommandRunInput, cfg: Settin
     return { text: `The cold send guard is ${isOn ? 'on' : 'off'} for this session.` }
   }
   const opened = await openPane($)
-  if (opened.isPlaced) return { text: 'Prompt Cache details are open in the side pane.' }
+  if (opened.isPlaced) return { text: 'Vitals is open in the side pane.' }
   const s = await snapshot($, cfg)
   const line = lineOf(lineFields(s, cfg), lineData(s, cfg, await liveContext($)))
   const auto = s.info?.autoOn === false ? 'off' : s.autoAt != null ? `at ${s.autoAt}%` : 'on'
@@ -841,12 +862,6 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'vitals',
       description: 'Vitals: prompt cache, context and compaction, usage limits, account, timeline; Keep Warm, the cold send guard and which fields show',
-      argumentHint: ARGS,
-    })
-    // The name it had as Cache Meter keeps working.
-    await $.command.register({
-      name: 'cache',
-      description: 'Vitals (the old /cache): the same as /vitals',
       argumentHint: ARGS,
     })
     $.clock.every(TICK_MS, () => {
@@ -1043,7 +1058,6 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e)) // a meter that fails never blocks a message
 
   on('command.run', { command: 'vitals' }, ($, e) => answerCommand($, e, cfg, mem))
-  on('command.run', { command: 'cache' }, ($, e) => answerCommand($, e, cfg, mem))
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const rest = await next(e)
@@ -1086,7 +1100,7 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
+    const { Box, Button, Input, Text } = $.ui.resolve(e)
     const snap = await snapshot($, cfg)
     const { view, st, ls, ttl, now, total, w, warmOn, switched, guardMode, r, warmFrom, guardFrom, sent } = snap
     const me = snap.who
@@ -1109,9 +1123,9 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column" rowGap="xs">{p.children}</Box>
       </Box>
     )
-    const Row = (p: { k: string; label: string; children: RenderChildren }) => (
+    const Row = (p: { k: string; label: string; width?: number; children: RenderChildren }) => (
       <Box key={p.k} flexDirection="row" columnGap={1}>
-        <Box width={LABEL} flexShrink={0}><Text dimColor wrap="truncate">{p.label}</Text></Box>
+        <Box width={p.width ?? LABEL} flexShrink={0}><Text dimColor wrap="truncate">{p.label}</Text></Box>
         <Box flexDirection="column" flexGrow={1} flexShrink={1}>{p.children}</Box>
       </Box>
     )
@@ -1120,7 +1134,8 @@ export const register: Register = (on, options) => {
      * No box is sized in percent, so a graphical surface never stretches a rule
      * past its share, and nothing is cut with an ellipsis.
      */
-    const METER_CELLS = 32
+    // As wide as the pane leaves beside the label, so a narrow pane never cuts it.
+    const METER_CELLS = Math.max(8, Math.min(32, (e.props.bodyColumns ?? 60) - LABEL - 6))
     const Meter = (p: { share: number; color?: string }) => {
       const share = Number.isFinite(p.share) ? Math.max(0, Math.min(1, p.share)) : 0
       const filled = share > 0 ? Math.max(1, Math.round(share * METER_CELLS)) : 0
@@ -1152,33 +1167,65 @@ export const register: Register = (on, options) => {
     const effort = effortLabel(view.effort)
     const where = statusWhere(snap, cfg)
 
-    put('now',
-      <Card k="account" title="Account" note={<Text dimColor>{me.label}</Text>} first>
-        <Row k="acct-name" label="Name">
-          <Text>
-            <Text bold>{me.label || 'This account'}</Text>
-            <Text dimColor>{`${dot}${me.labelFrom === 'single' ? 'The only account here, so the band leaves it out' : me.labelFrom === 'own' ? 'Named with /vitals account' : me.labelFrom === 'setting' ? 'From accountLabels' : 'The letter of its config folder'}`}</Text>
-          </Text>
-          <Text dimColor size="footnote">/vitals account Work names it on this account; reset hands it back.</Text>
+    // The account and the session stand under the figures that change: cache, next message, limits.
+    const accountCard = (
+      <Card k="account" title="Account">
+        <Row k="acct-name" label="Label">
+          <Box flexDirection="row" columnGap={1} alignItems="center" flexWrap="wrap">
+            <Text wrap="wrap">
+              <Text bold>{me.label || 'None'}</Text>
+              <Text dimColor>{`${dot}${cap(LABEL_FROM[me.labelFrom])}`}</Text>
+            </Text>
+            {me.labelFrom === 'own' ? <Button key="acct-reset" label="Reset" variant="secondary" onPress={() => void setAccountName($, cfg, null).then(() => refreshLine($, cfg, mem))} /> : null}
+          </Box>
+          {me.suggested && (me.labelFrom === 'letter' || me.labelFrom === 'single') ? (
+            <Box flexDirection="row" columnGap={1} alignItems="center" flexWrap="wrap">
+              <Text dimColor>Label it</Text>
+              <Button key="acct-suggested" label={me.suggested} variant="secondary" onPress={() => void setAccountName($, cfg, me.suggested).then(() => refreshLine($, cfg, mem))} />
+            </Box>
+          ) : null}
         </Row>
-        {me.email ? <Row k="acct-email" label="E-mail"><Text wrap="truncate">{me.email}</Text></Row> : null}
-        {d.model ? (
+        <Row k="acct-rename" label="Rename">
+          <Input
+            key="acct-input"
+            placeholder="Work, Personal, any name of yours"
+            submitLabel="save"
+            onSubmit={value => {
+              const name = value.replace(/\s+/g, ' ').trim().slice(0, ACCOUNT_MAX)
+              if (name) void setAccountName($, cfg, name).then(() => refreshLine($, cfg, mem))
+            }}
+          />
+          <Text dimColor size="footnote" wrap="wrap">For every session on this account. /vitals account Work does the same.</Text>
+        </Row>
+        <Row k="acct-id" label="ID">
+          <Text wrap="wrap">
+            <Text mono>{me.id}</Text>
+            <Text dimColor>{`${dot}Its config folder, which tells accounts apart`}</Text>
+          </Text>
+        </Row>
+        {me.email ? <Row k="acct-email" label="E-mail"><Text wrap="wrap">{me.email}</Text></Row> : null}
+      </Card>
+    )
+    // The model stands in the cache card once a request has gone; before that, here.
+    const sessionCard = (view.state === 'none' && d.model) || me.mode || me.style || me.dir ? (
+      <Card k="session-info" title="Session">
+        {view.state === 'none' && d.model ? (
           <Row k="acct-model" label="Model">
-            <Text>
+            <Text wrap="wrap">
               <Text>{d.model}</Text>
               {effortLabel(d.effort) ? <Text dimColor>{`${dot}Effort ${effortLabel(d.effort)}`}</Text> : null}
             </Text>
           </Row>
         ) : null}
-        {me.mode ? <Row k="acct-mode" label="Mode"><Text>{me.mode}</Text></Row> : null}
+        {me.mode ? <Row k="acct-mode" label="Mode"><Text>{MODE_NAME[me.mode] ?? me.mode}</Text></Row> : null}
         {me.style ? <Row k="acct-style" label="Output Style"><Text>{me.style}</Text></Row> : null}
         {me.dir ? (
           <Row k="acct-dir" label="Folder">
-            <Text><Text>{me.dir}</Text>{me.branch ? <Text dimColor>{`${dot}${me.branch}`}</Text> : null}</Text>
+            <Text wrap="wrap"><Text>{me.dir}</Text>{me.branch ? <Text dimColor>{`${dot}${me.branch}`}</Text> : null}</Text>
           </Row>
         ) : null}
-      </Card>,
-    )
+      </Card>
+    ) : null
 
     put('settings',
       <Card k="line" title="Status Line" note={<Text dimColor>{where === 'on' ? 'Pinned' : where === 'off' ? 'Off' : 'Terminal'}</Text>} first>
@@ -1206,7 +1253,7 @@ export const register: Register = (on, options) => {
     }
 
     put('now',
-      <Card k="cache" title="Prompt Cache" note={<Text dimColor>{`TTL ${ttl}`}</Text>}>
+      <Card k="cache" title="Prompt Cache" note={<Text dimColor>{`TTL ${ttl}`}</Text>} first>
         {view.state === 'none' ? (
           <Row k="state" label="State"><Text dimColor>{st.requests > 0 ? 'Known after the next reply' : 'No request yet'}</Text></Row>
         ) : (
@@ -1219,7 +1266,7 @@ export const register: Register = (on, options) => {
                     ? `${dot}Model changed, the next message writes the cache anew`
                     : cold
                       ? view.why === 'compacted'
-                        ? `${dot}Compacted, the next message writes the summary`
+                        ? `${dot}The conversation was compacted, the next message caches its summary`
                         : view.why === 'unknown'
                           ? `${dot}After a break, idle time not known`
                           : `${dot}Idle ${dur(view.idleMs)}`
@@ -1426,6 +1473,9 @@ export const register: Register = (on, options) => {
       )
     }
 
+    put('now', accountCard)
+    if (sessionCard) put('now', sessionCard)
+
     put('cost',
       <Box key="foot" marginTop={1} paddingX={1}>
         <Text dimColor size="footnote">
@@ -1519,7 +1569,9 @@ export const register: Register = (on, options) => {
               </Box>
             </Box>
           ))}
-          <Box marginTop={1}><Text dimColor size="footnote">Connectors from claude.ai are named by an id; their tools' names stand in for it.</Text></Box>
+          {info.mcp.some(m => m.label !== m.server.replace(/^claude\.ai /, '')) ? (
+            <Box marginTop={1}><Text dimColor size="footnote" wrap="wrap">The desktop app knows connectors from claude.ai by an id alone, so those are named after their tools.</Text></Box>
+          ) : null}
         </Card>,
       )
     }
@@ -1542,34 +1594,32 @@ export const register: Register = (on, options) => {
         {tl.length === 0 ? (
           <Text dimColor>Nothing yet. Each message you send and each reply shows here with its time.</Text>
         ) : (
-          tl.slice(-20).flatMap((x, i, list) => {
-            const prev = list[i - 1]
-            const gap = prev && x.who !== 'claude' ? x.at - prev.at : 0
-            const ttlMs = TTL_MS[ttl]
+          // The newest first. A gap that let the cache go cold stands under the message that paid for it.
+          tl.map((x, i) => ({ x, gap: i > 0 && x.who !== 'claude' ? x.at - tl[i - 1]!.at : 0 })).slice(-TIMELINE_SHOWN).reverse().flatMap(({ x, gap }) => {
             const rows: RenderChildren[] = []
-            if (gap > ttlMs) rows.push(<Text key={`gap-${x.at}`} color="error" size="footnote">{`${dur(gap)} idle, the cache went cold`}</Text>)
-            const clock = clockOf(new Date(x.at).toISOString(), x.at, me.tzMin)
+            const clock = stampOf(x.at, now, me.tzMin)
             rows.push(
-              <Row k={`tl-${x.at}-${x.who}`} label={clock}>
+              <Row k={`tl-${x.at}-${x.who}`} label={clock} width={clock.length > 5 ? 10 : 6}>
                 {x.who === 'claude' ? (
                   <Box flexDirection="column">
-                    <Text>
+                    <Text wrap="wrap">
                       <Text bold>Claude</Text>
-                      <Text dimColor>{`${x.ms != null ? `${dot}${dur(x.ms)}` : ''}${x.tools ? `${dot}${x.tools} ${x.tools === 1 ? 'tool' : 'tools'}` : ''}`}</Text>
+                      <Text dimColor>{`${x.ms != null ? `${dot}took ${dur(x.ms)}` : ''}${x.tools ? `${dot}${x.tools} ${x.tools === 1 ? 'tool' : 'tools'}` : ''}`}</Text>
                     </Text>
-                    {x.text ? <Text dimColor wrap="truncate-end">{x.text}</Text> : null}
+                    {x.text ? <Text dimColor wrap="wrap">{x.text}</Text> : null}
                   </Box>
                 ) : (
                   <Box flexDirection="column">
-                    <Text>
+                    <Text wrap="wrap">
                       <Text bold color={x.who === 'you' ? undefined : 'suggestion'}>{WHO_NAME[x.who] ?? 'You'}</Text>
                       {x.from ? <Text dimColor>{`${dot}${x.from}`}</Text> : null}
                     </Text>
-                    {x.text ? <Text dimColor={x.who !== 'you'} wrap="truncate-end">{x.text}</Text> : null}
+                    {x.text ? <Text dimColor={x.who !== 'you'} wrap="wrap">{x.text}</Text> : null}
                   </Box>
                 )}
               </Row>,
             )
+            if (gap > TTL_MS[ttl]) rows.push(<Text key={`gap-${x.at}`} color="error" size="footnote" wrap="wrap">{`${dur(gap)} idle before it, the cache had gone cold`}</Text>)
             return rows
           })
         )}
@@ -1598,7 +1648,7 @@ const summary = (
   const effort = effortLabel(v.effort)
   if (v.state === 'none') line('Prompt Cache', st.requests ? 'Known after the next reply' : 'No request yet')
   else {
-    const idle = v.why === 'compacted' ? 'compacted' : v.why === 'unknown' ? 'after a break' : `idle ${dur(v.idleMs)}`
+    const idle = v.why === 'compacted' ? 'after compaction' : v.why === 'unknown' ? 'after a break' : `idle ${dur(v.idleMs)}`
     const state = switched ? 'Cold, the model changed' : v.state === 'cold' ? `Cold, ${idle}` : `Warm, ${dur(v.leftMs)} left`
     line('Prompt Cache', `${state} (TTL ${ttl})`)
     line('Context', `${tok(v.ctx)} tokens${v.window ? `, ${pct(v.ctx, v.window)}% of ${tok(v.window)}` : ''}`)

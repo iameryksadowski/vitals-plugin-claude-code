@@ -443,13 +443,13 @@ test('after compaction the cache is cold, compacted, priced from the live contex
   const { line } = await bandLine($)
   expectTidy(line)
   // The live context is 300k: written on Opus 5.5 at the 1h rate, $8/MTok.
-  expect(line).toBe(['● Cache Cold Compacted', 'Next $2.40 Re-cache', 'A', '5-Hour 42% 3h 10m', 'Weekly 88% 2d 4h', 'Context 300k 30%'].join(SEP))
+  expect(line).toBe(['● Cache Cold After compaction', 'Next $2.40 Re-cache', 'A', '5-Hour 42% 3h 10m', 'Weekly 88% 2d 4h', 'Context 300k 30%'].join(SEP))
   expect(line).not.toContain('Idle')
   expect(line).not.toContain('Waiting')
   // A just-compacted cache is no reason to compact again.
   expect(line).not.toContain('Compact cache cold')
   const now = await $.ui.mount({ ...pane(), surface: 'desktop' })
-  expect(await now.find({ type: 'Text', text: /Compacted, the next message writes the summary/ })).toBeDefined()
+  expect(await now.find({ type: 'Text', text: /The conversation was compacted, the next message caches its summary/ })).toBeDefined()
   await now.unmount()
   const cost = await paneAt($, 'cost')
   expect(await cost.find({ type: 'Text', text: '96%' })).toBeDefined()
@@ -625,7 +625,7 @@ test('/cache with a pane says where it went', async ($, on) => {
   engine(on)
   mock.clock(on, { now: NOW })
   await start($)
-  expect(await cache($)).toBe('Prompt Cache details are open in the side pane.')
+  expect(await cache($)).toBe('Vitals is open in the side pane.')
 })
 
 // ── The cold send guard ─────────────────────────────────────────────────────
@@ -1007,7 +1007,7 @@ test('a compaction of the main conversation makes the band read Cold, Compacted;
   await $.session.compact({ trigger: 'manual', messages } as never)
   await settle($)
   const { line } = await bandLine($)
-  expect(line.startsWith(['● Cache Cold Compacted', 'Next $2.40 Re-cache'].join(SEP))).toBe(true)
+  expect(line.startsWith(['● Cache Cold After compaction', 'Next $2.40 Re-cache'].join(SEP))).toBe(true)
 })
 
 // `/cache compact` cannot compact inside its own command.run hook (the host refuses it under
@@ -1021,7 +1021,7 @@ test('/cache compact queues the compaction and the end of the turn runs it', asy
   await $.turn.complete({ answer: 'done', durationMs: 1_000, isAborted: false, turnId: 't1', reason: 'answer' })
   expect(seen.compacts).toBe(1)
   // Its own compaction resets the cache to cold, compacted: the engine skips this plugin's own hook for it.
-  expect((await bandLine($)).line).toContain('● Cache Cold Compacted')
+  expect((await bandLine($)).line).toContain('● Cache Cold After compaction')
 })
 
 test('Compact Now asks the engine to compact; a skip leaves the cache warm', async ($, on) => {
@@ -1143,13 +1143,45 @@ test('the timeline records your message and the reply with its time and tools, a
   expect(all).toContain('Fix the login bug please')
   expect(all).toContain('back again')
   expect(all).toContain('Claude')
-  expect(all).toContain('  ·  42s  ·  2 tools')
-  expect(all).toContain('2h 00m idle, the cache went cold')
+  expect(all).toContain('  ·  took 42s  ·  2 tools')
+  expect(all).toContain('2h 00m idle before it, the cache had gone cold')
+  // The newest first, and the gap under the message that paid for it.
+  const order = ['back again', '2h 00m idle before it, the cache had gone cold', 'Final names for the plugin', 'scheduled check', 'done', 'Fix the login bug please'].map(t => all.indexOf(t))
+  expect(order).toEqual([...order].sort((a, b) => a - b))
+  expect(order.includes(-1)).toBe(false)
   expect(all).toContain('Scheduled')
   expect(all).toContain('scheduled check')
   expect(all).toContain('App')
   expect(all).toContain('Session')
   expect(all).toContain('Final names for the plugin')
   expect(all.some(t => t.includes('system-reminder') || t.includes('cross-session'))).toBe(false)
+  await ui.unmount()
+})
+
+test('a narrowing band lets the next price go before the context, cold or warm', async ($, on) => {
+  engine(on)
+  mock.clock(on, { now: NOW })
+  await start($)
+  await step($)
+  await $.classic.SessionStart({ source: 'compact' } as never)
+  // Too narrow for two of its parts: the second limit goes, then the price, and the context stays.
+  const full = (await bandLine($, 200)).line
+  const { line } = await bandLine($, full.length + 2 + 9 - 30)
+  expectTidy(line)
+  expect(line).toContain('Cache Cold After compaction')
+  expect(line).toContain('Context 300k 30%')
+  expect(line).not.toContain('Next')
+})
+
+test('a long message wraps in the timeline instead of being cut at the pane edge', async ($, on) => {
+  engine(on)
+  mock.clock(on, { now: NOW })
+  await start($)
+  const long = 'This message is long enough to need more than one line in a narrow pane, and it keeps going for a while.'
+  await prompt($, long)
+  const ui = await paneAt($, 'timeline', 40)
+  const row = await ui.find({ type: 'Text', text: long })
+  expect(row).toBeDefined()
+  expect((row as { props?: { wrap?: string } }).props?.wrap ?? 'wrap').toBe('wrap')
   await ui.unmount()
 })

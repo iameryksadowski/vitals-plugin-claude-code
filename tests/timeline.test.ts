@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { firstLine, promptEntry } from '../hooks/timeline'
+import { firstLine, promptEntry, stampOf } from '../hooks/timeline'
 
 const AT = 1_000
 
@@ -35,7 +35,14 @@ test('a finished task, an app event and a scheduled prompt each read as such; a 
 
 test('a long message reads as its opening, cut with three dots', () => {
   const long = 'word '.repeat(60)
+  expect(firstLine('short  one\n here')).toBe('short one here')
   const one = firstLine(long)
-  expect(one.length).toBe(90)
+  expect(one.length).toBe(180)
   expect(one.endsWith('...')).toBe(true)
+})
+
+test('a moment reads as a clock time within the last day, with its weekday further back', () => {
+  const at = Date.parse('2026-11-14T15:01:00Z')
+  expect(stampOf(at, at + 3_600_000, 60)).toBe('16:01')
+  expect(stampOf(at, at + 30 * 3_600_000, 60)).toBe('Sat 16:01')
 })

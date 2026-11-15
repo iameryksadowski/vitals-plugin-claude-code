@@ -37,7 +37,8 @@ test('a long message reads as its opening, cut with three dots', () => {
   const long = 'word '.repeat(60)
   expect(firstLine('short  one\n here')).toBe('short one here')
   const one = firstLine(long)
-  expect(one.length).toBe(180)
+  expect(one.length <= 180).toBe(true)
+  expect(one.length > 170).toBe(true)
   expect(one.endsWith('...')).toBe(true)
 })
 
@@ -45,4 +46,26 @@ test('a moment reads as a clock time within the last day, with its weekday furth
   const at = Date.parse('2026-11-14T15:01:00Z')
   expect(stampOf(at, at + 3_600_000, 60)).toBe('16:01')
   expect(stampOf(at, at + 30 * 3_600_000, 60)).toBe('Sat 16:01')
+})
+
+test('a reply reads as plain words: no markdown marks, links keep their text', () => {
+  expect(firstLine('## Kopia\nLeży w `~/Documents` ([release v1](https://example.com/r)) i **działa**.')).toBe('Kopia Leży w ~/Documents (release v1) i działa.')
+})
+
+test('a long message is cut at a word, the dots right after it', () => {
+  const cut = firstLine(`${'word '.repeat(60)}`, 40)
+  expect(cut.endsWith('word...')).toBe(true)
+  expect(cut.length <= 40).toBe(true)
+})
+
+test('a subagent handing back is not a message from you', () => {
+  const e = promptEntry('<agent-message from="a2dcc3282d179fc05"> [Subagent hand-back] The text below is the final report.</agent-message>', 'user', 1)
+  expect(e?.who).toBe('agent')
+  expect(e?.text).toBe('The text below is the final report.')
+})
+
+test('quoted replies and comment marks are left out of your message', () => {
+  const e = promptEntry('<!-- reply 2 -->\n> Pozostałe stare repo zostawiłem.\n\nmozesz usuwac', 'user', 1)
+  expect(e).toMatchObject({ who: 'you', text: 'mozesz usuwac' })
+  expect(promptEntry('> only a quote', 'user', 1)?.text).toBe('> only a quote')
 })

@@ -15,12 +15,12 @@ const HOUR = 60 * MIN
 const bandProps = (bodyColumns = 200, hasSurvey = false) =>
   ({ hasSurvey, isCollapsed: false, isWorking: false, maxRows: 4, bodyColumns, scroll: { offset: 0, bodyRows: 4 }, view: {} }) as const
 const band = (bodyColumns?: number, hasSurvey?: boolean) =>
-  ({ plugin: 'cache-meter', component: 'AbovePrompt', props: bandProps(bodyColumns, hasSurvey) }) as const
+  ({ plugin: 'vitals', component: 'AbovePrompt', props: bandProps(bodyColumns, hasSurvey) }) as const
 const pane = (bodyColumns = 60) =>
   ({
-    plugin: 'cache-meter',
+    plugin: 'vitals',
     component: 'Pane',
-    requestId: 'cache-meter',
+    requestId: 'vitals',
     props: { title: 'Prompt Cache', isFocused: false, bodyColumns, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
   }) as const
 
@@ -128,7 +128,7 @@ const engine = (on: On, w: World = {}) => {
   on('classic.UserPromptSubmit', () => ({}))
   on('turn.complete', () => ({ text: '' }))
   on('tool.call', () => ({ result: 'ok' }) as never)
-  on('command.register', () => ({ value: { command: 'cache' } }))
+  on('command.register', () => ({ value: { command: 'vitals' } }))
   on('ui.open', () => ({ value: w.placed === false ? { isPlaced: false as const, reason: 'no room for a pane' } : { isPlaced: true as const } }))
   on('ui.log', (_, e) => {
     seen.logs.push(String((e as { text?: unknown }).text ?? ''))
@@ -164,7 +164,7 @@ const step = async ($: $T, extra: { agentId?: string; effort?: 'low' | 'medium' 
 }
 
 /** /cache as typed, with whatever follows it. */
-const cache = async ($: $T, args = '') => ((await $.command.run({ command: 'cache', args } as never)) as { text?: string }).text ?? ''
+const cache = async ($: $T, args = '') => ((await $.command.run({ command: 'vitals', args } as never)) as { text?: string }).text ?? ''
 
 const send = ($: $T, text: string, kind = 'composer') => $.prompt.submit({ text, origin: { kind } as never, wait: false })
 
@@ -198,7 +198,7 @@ const paneAt = async ($: $T, tab: Tab, columns = 60, surface: 'terminal' | 'desk
 
 /** Lets the plugin's fire-and-forget work (a store write, a context read) run: a few round trips through the engine. */
 const settle = async ($: $T) => {
-  for (let i = 0; i < 10; i++) await $.command.run({ command: 'cache', args: 'fields' } as never)
+  for (let i = 0; i < 10; i++) await $.command.run({ command: 'vitals', args: 'fields' } as never)
 }
 
 const switchModel = ($: $T, to: string, from = 'claude-opus-5-5', ttl: '5m' | '1h' = '1h') =>
@@ -633,7 +633,7 @@ test('the first message into a cold cache is held once with its price; the resen
   await clock.advance(HOUR + 5 * MIN)
   const first = await send($, 'what next?')
   expect(first.drop).toBe(
-    'Cache Meter: The prompt cache went cold 5m ago. This message re-writes ~301k tokens on Opus 5.5 for $2.41 (a warm read would be $0.06). Send it again to go ahead, or /clear and start from a short summary. /cache guard off stops these holds.',
+    'Vitals: The prompt cache went cold 5m ago. This message re-writes ~301k tokens on Opus 5.5 for $2.41 (a warm read would be $0.06). Send it again to go ahead, or /clear and start from a short summary. /vitals guard off stops these holds.',
   )
   expect((await send($, 'what next?')).drop).toBeUndefined()
 })
@@ -730,9 +730,9 @@ test('/cache prints the guard where no pane can be seated', async ($, on) => {
   mock.clock(on, { now: NOW })
   await start($)
   await step($)
-  expect(await cache($)).toContain('Cold Guard    Off (Plugin settings, every repo). /cache guard switches it.')
+  expect(await cache($)).toContain('Cold Guard    Off (Plugin settings, every repo). /vitals guard switches it.')
   await cache($, 'guard on')
-  expect(await cache($)).toContain('Cold Guard    On, holds the message once (This session). /cache guard switches it.')
+  expect(await cache($)).toContain('Cold Guard    On, holds the message once (This session). /vitals guard switches it.')
 })
 
 test('out of the box the guard and Keep Warm are both off: a cold send goes straight through and nothing pings', async ($, on) => {
@@ -795,7 +795,7 @@ test('/cache guard repo on keeps it for the repo and takes over this session; re
   await start($)
   await step($)
   await clock.advance(2 * HOUR)
-  expect(await cache($, 'guard repo')).toBe('The cold send guard is off here. This repo follows the plugin settings. /cache guard repo on, off or reset changes that.')
+  expect(await cache($, 'guard repo')).toBe('The cold send guard is off here. This repo follows the plugin settings. /vitals guard repo on, off or reset changes that.')
   await cache($, 'guard on')
   expect(await cache($, 'guard repo off')).toBe('The cold send guard is off in every session in /work/app.')
   expect((await send($, 'repo says off')).drop).toBeUndefined()

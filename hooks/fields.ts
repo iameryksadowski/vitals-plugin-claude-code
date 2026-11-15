@@ -11,7 +11,7 @@ export const FIELDS = [
 ] as const
 export type Field = (typeof FIELDS)[number]
 
-/** What each field shows, for `/cache fields` and the README. */
+/** What each field shows, for `/vitals fields` and the README. */
 export const FIELD_INFO: Record<Field, string> = {
   account: 'Account name: a letter from the config folder (A, B, C) or your own label',
   email: 'E-mail of the signed-in account (shown only, never sent anywhere)',

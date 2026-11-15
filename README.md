@@ -1,4 +1,4 @@
-# Cache Meter
+# Vitals
 
 Everything about the session Claude Code does not show on its own, in one row above the prompt, in the terminal and in the desktop app: the prompt cache, what the next message costs, the account and its usage limit, the context and when to compact. The rest is one click away in a side pane.
 
@@ -8,6 +8,19 @@ A · Opus 5.5 · medium · ● Warm 42m · next $0.06 · 7d 5% 6d 15h · ctx 30%
 ```
 
 The first line is the band above the prompt. The second is the terminal status line, which also carries what the terminal footer lacks (model, effort, branch). Nothing Claude Code already shows (the desktop footer has the model, effort and permission mode) is repeated by default.
+
+## Install
+
+Private repo: your GitHub account needs access to it. From a shell:
+
+```
+claude plugin marketplace add iameryksadowski/vitals-plugin-claude-code
+claude plugin install vitals@vitals --scope user
+```
+
+Or at the prompt of a Claude Code session: `/plugin marketplace add iameryksadowski/vitals-plugin-claude-code`, then `/plugin install vitals@vitals`. Update later with `claude plugin marketplace update vitals`.
+
+Vitals was Cache Meter until 0.6.0. Moving over: `claude plugin uninstall cache-meter@cachemeter` and `claude plugin marketplace remove cachemeter`, install as above, and point the account's `statusLine` at the new script path (below). `/cache` still works as `/vitals`.
 
 ## What it shows
 
@@ -21,7 +34,7 @@ Parts drop out strictly by priority as the window narrows: the cache state stays
 
 ## The pane
 
-`Details`, or `/cache`, opens a side pane with five tabs. `/cache now`, `/cache context`, `/cache cost`, `/cache timeline` and `/cache settings` open it on that tab.
+`Details`, or `/vitals`, opens a side pane with five tabs. `/vitals now`, `/vitals context`, `/vitals cost`, `/vitals timeline` and `/vitals settings` open it on that tab.
 
 | Tab | Shows |
 | --- | --- |
@@ -33,15 +46,15 @@ Parts drop out strictly by priority as the window narrows: the cache state stays
 
 ## For other plugins
 
-The plugin adds `$.sessionMeter` to the engine, so another plugin can read this session's figures instead of measuring them again. List this plugin under `dependencies` in your `plugin.json` and call:
+The plugin adds `$.vitals` to the engine, so another plugin can read this session's figures instead of measuring them again. List this plugin under `dependencies` in your `plugin.json` and call:
 
 ```ts
-const s = await $.sessionMeter.snapshot()
+const s = await $.vitals.snapshot()
 // s.account.label, s.cache.state, s.cache.nextUsd, s.context.percent, s.context.autoCompactAtPercent,
 // s.context.advice, s.limits (kind, percentUsed, resetsAt), s.session.hitPercent, s.session.usd
 ```
 
-The reading refreshes every 15 seconds and after each reply; `null` before the first. It never carries the e-mail or anything said in the session. The types are in `types/index.d.ts` (`SessionMeterSnapshot`).
+The reading refreshes every 15 seconds and after each reply; `null` before the first. It never carries the e-mail or anything said in the session. The types are in `types/index.d.ts` (`VitalsSnapshot`).
 
 ## Compaction
 
@@ -51,7 +64,7 @@ Compacting costs about one pass over the context. It is cheapest at a break you 
 - **Auto-compact is near** (within 10 points of its threshold): better now, at a natural break, than when it cuts in mid-task.
 - **Auto-compact is off** and the context is over 80%.
 
-Then the band shows `Compact` with the reason. `/cache compact` (or Compact Now in the pane) compacts, the same as `/compact`. `/cache autocompact on|off` (or the switch in the pane) switches Claude Code's own auto-compact, the same row as in `/config`. `compactHint: off` hides the hint.
+Then the band shows `Compact` with the reason. `/vitals compact` (or Compact Now in the pane) compacts, the same as `/compact`. `/vitals autocompact on|off` (or the switch in the pane) switches Claude Code's own auto-compact, the same row as in `/config`. `compactHint: off` hides the hint.
 
 ## Status line
 
@@ -60,14 +73,14 @@ One line with the fields you pick, in the order you pick: by default the account
 | Where | How it is drawn |
 | --- | --- |
 | Terminal | The account's `statusLine` command runs the plugin's script, which prints the line the plugin wrote for that session (`statusLine: auto`). |
-| Desktop app (Code tab) | Not drawn by default: the desktop app does not run a `statusLine` command, the band shows the same and the footer already has the model and effort. `statusLine: on` (or `/cache line on`) pins it under the prompt there too. |
+| Desktop app (Code tab) | Not drawn by default: the desktop app does not run a `statusLine` command, the band shows the same and the footer already has the model and effort. `statusLine: on` (or `/vitals line on`) pins it under the prompt there too. |
 
 The terminal script, in each account's `settings.json`:
 
 ```json
 "statusLine": {
   "type": "command",
-  "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/cachemeter/bin/statusline.sh\""
+  "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/vitals/bin/statusline.sh\""
 }
 ```
 
@@ -99,23 +112,23 @@ Aliases work too: `weekly`, `ctx`, `cold`, `cost`, `limits` (all three limits), 
 Change them for this account (every session after, over the plugin settings):
 
 ```
-/cache line                      the line now, and its fields
-/cache line hide email effort
-/cache line show branch mode
-/cache line set account model 7d context
-/cache line reset                back to the plugin settings
-/cache line on | off | auto      also pin it under the prompt, draw it nowhere, or only in the terminal script
-/cache band show account model   the same for the band
-/cache fields                    every field and both lists
+/vitals line                      the line now, and its fields
+/vitals line hide email effort
+/vitals line show branch mode
+/vitals line set account model 7d context
+/vitals line reset                back to the plugin settings
+/vitals line on | off | auto      also pin it under the prompt, draw it nowhere, or only in the terminal script
+/vitals band show account model   the same for the band
+/vitals fields                    every field and both lists
 ```
 
-Or in `/plugin configure cache-meter@cachemeter` (and `/config`): `bandFields`, `lineFields`, `statusLine`, `resetStyle`, `accountLabels`.
+Or in `/plugin configure vitals@vitals` (and `/config`): `bandFields`, `lineFields`, `statusLine`, `resetStyle`, `accountLabels`.
 
 Compaction from the prompt:
 
 ```
-/cache compact                   compact now, as /compact does
-/cache autocompact on | off      switch Claude Code's auto-compact, as /config does
+/vitals compact                   compact now, as /compact does
+/vitals autocompact on | off      switch Claude Code's auto-compact, as /config does
 ```
 
 What Claude Code does not hand a plugin, the plugin does not show: fast mode has no reading for plugins yet.
@@ -152,15 +165,15 @@ Keep Warm and the cold send guard are each set at three levels. The closer one w
 
 | Level | How | Lasts |
 | --- | --- | --- |
-| Every repo | `/plugin configure cache-meter@cachemeter` (or `/config`): `guard`, `keepWarm` | Until you change it |
-| This repo | `/cache guard repo on`, `off` or `reset`; `/cache warm repo on`, `off` or `reset`; or "Keep On Here" / "Follow Settings" in the pane | Every new session in this repo and its worktrees |
-| This session | `/cache guard on` or `off`, `/cache warm on` or `off`, or the Turn On / Turn Off button in the pane | Until the session ends |
+| Every repo | `/plugin configure vitals@vitals` (or `/config`): `guard`, `keepWarm` | Until you change it |
+| This repo | `/vitals guard repo on`, `off` or `reset`; `/vitals warm repo on`, `off` or `reset`; or "Keep On Here" / "Follow Settings" in the pane | Every new session in this repo and its worktrees |
+| This session | `/vitals guard on` or `off`, `/vitals warm on` or `off`, or the Turn On / Turn Off button in the pane | Until the session ends |
 
 The pane shows for each which level set it. Claude Code reads plugin settings from your user settings only (a repo's `.claude/settings.json` cannot set them), so the plugin keeps each repo's choice in its own store under your Claude Code configuration, keyed by the repo's folder.
 
 ## Settings
 
-All are in `/plugin configure cache-meter@cachemeter` and `/config` (stored as `pluginConfigs` in your user settings, so each account keeps its own):
+All are in `/plugin configure vitals@vitals` and `/config` (stored as `pluginConfigs` in your user settings, so each account keeps its own):
 
 | Field | Values | Default |
 | --- | --- | --- |
@@ -179,13 +192,13 @@ All are in `/plugin configure cache-meter@cachemeter` and `/config` (stored as `
 | `alfredHome` | a folder | `~/Development/alfred-app` |
 | `alfredUrl` | a URL | `http://127.0.0.1:8765` |
 
-`ttl`, `guard` and `keepWarm` are the default for every repo (see [On, off and where](#on-off-and-where)); the fields are per account, and `/cache band|line ...` keeps a choice over them.
+`ttl`, `guard` and `keepWarm` are the default for every repo (see [On, off and where](#on-off-and-where)); the fields are per account, and `/vitals band|line ...` keeps a choice over them.
 
 ## Good to know
 
 - With Keep Warm off it never calls a model and costs nothing to run: it reads the engine's own figures and the API's usage counts.
 - Each account (config folder) reads its own login record, limits and settings, so the line never shows another account's figures.
-- Dollar figures are API list prices from `hooks/cache.ts`. On a subscription they show how heavy a message is against your limits, not a bill.
+- Dollar figures are API list prices from `hooks/vitals.ts`. On a subscription they show how heavy a message is against your limits, not a bill.
 - Only the main thread resets the cache clock; subagents have their own caches.
 - Built on Claude Code mods (2.1.287 or later). The mod API is in early access: after a Claude Code update, run the checks below.
 

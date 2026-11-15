@@ -92,7 +92,7 @@ const world = (on: On, a: Account = {}) => {
       cost: { usd: 3.5 },
     },
   }))
-  on('command.register', () => ({ value: { command: 'cache' } }))
+  on('command.register', () => ({ value: { command: 'vitals' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
     const { Box } = $.ui.resolve(e)
@@ -119,11 +119,11 @@ const start = ($: $T, surface: 'terminal' | 'desktop' = 'desktop') => $.session.
 const step = async ($: $T) => {
   for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', effort: 'xhigh', messageCount: 4 })) void _
 }
-const cache = async ($: $T, args = '') => ((await $.command.run({ command: 'cache', args } as never)) as { text?: string }).text ?? ''
+const cache = async ($: $T, args = '') => ((await $.command.run({ command: 'vitals', args } as never)) as { text?: string }).text ?? ''
 const options = (o: Record<string, string>) => ({ options: o })
 /** Lets the plugin's fire-and-forget work (a send to Alfred) run: a few round trips through the engine. */
 const settle = async ($: $T) => {
-  for (let i = 0; i < 10; i++) await $.command.run({ command: 'cache', args: 'fields' } as never)
+  for (let i = 0; i < 10; i++) await $.command.run({ command: 'vitals', args: 'fields' } as never)
 }
 
 // --- fields, pure ---
@@ -181,7 +181,7 @@ test('the Alfred reading carries limits, context and model, never the e-mail', (
   const body = alfredBody({ configDir: `${HOME}/.claude-b`, session: 's', model: 'claude-opus-5-5', limits: LIMITS_B, context: { tokens: 300_000, window: 1_000_000, percent: 30 } })
   expect(body).toEqual({
     zrodlo: 'statusline',
-    klient: 'cache-meter',
+    klient: 'vitals',
     config_dir: `${HOME}/.claude-b`,
     sesja: 's',
     model: 'claude-opus-5-5',
@@ -213,17 +213,17 @@ test('account C reads its own folder, e-mail and limits', options(ACCOUNT_LINE),
 })
 
 test('in a terminal with the script the line is written for the script, with the default fields, and nothing is pinned', async ($, on) => {
-  const seen = world(on, { surfaces: ['terminal'], statusLine: 'bash "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/cachemeter/bin/statusline.sh"', limits: LIMITS_B })
+  const seen = world(on, { surfaces: ['terminal'], statusLine: 'bash "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/vitals/bin/statusline.sh"', limits: LIMITS_B })
   mock.clock(on, { now: NOW })
   await start($, 'terminal')
   expect(seen.status.filter(Boolean)).toEqual([])
   // Before the first reply there is no cache, next price or compact hint to show.
-  expect(seen.writes.get('/tmp/t/cache-meter/sess-1.line')).toBe('A · Opus 5.5 · medium · 5h 34% 1h 40m · 7d 55% 1d 14h · ctx 30% · ⎇ main')
+  expect(seen.writes.get('/tmp/t/vitals/sess-1.line')).toBe('A · Opus 5.5 · medium · 5h 34% 1h 40m · 7d 55% 1d 14h · ctx 30% · ⎇ main')
   await step($)
   // The next measurement after the reply draws the line again.
   await $.session.measure({ changed: ['context'], startedAt: 0, context: { window: 1_000_000 }, rateLimits: LIMITS_B } as never)
   await settle($)
-  expect(seen.writes.get('/tmp/t/cache-meter/sess-1.line')).toBe('A · Opus 5.5 · xhigh · ● Warm 1h 00m · next $0.06 · 5h 34% 1h 40m · 7d 55% 1d 14h · ctx 30% · ⎇ main')
+  expect(seen.writes.get('/tmp/t/vitals/sess-1.line')).toBe('A · Opus 5.5 · xhigh · ● Warm 1h 00m · next $0.06 · 5h 34% 1h 40m · 7d 55% 1d 14h · ctx 30% · ⎇ main')
   expect(seen.status.filter(Boolean)).toEqual([])
 })
 
@@ -244,7 +244,7 @@ for (const [where, surface, statusLine] of [
 }
 
 test('statusLine off pins nothing; on pins it in a terminal with the script too', async ($, on) => {
-  const seen = world(on, { surfaces: ['terminal'], statusLine: 'cachemeter/bin/statusline.sh' })
+  const seen = world(on, { surfaces: ['terminal'], statusLine: 'vitals/bin/statusline.sh' })
   mock.clock(on, { now: NOW })
   await start($, 'terminal')
   expect(seen.status.filter(Boolean)).toEqual([])
@@ -253,7 +253,7 @@ test('statusLine off pins nothing; on pins it in a terminal with the script too'
   await cache($, 'line off')
   expect(seen.status.at(-1)).toBeUndefined()
   // The terminal script still gets its line.
-  expect(seen.writes.get('/tmp/t/cache-meter/sess-1.line')).toBe('A · Opus 5.5 · medium · ctx 30% · ⎇ main')
+  expect(seen.writes.get('/tmp/t/vitals/sess-1.line')).toBe('A · Opus 5.5 · medium · ctx 30% · ⎇ main')
 })
 
 test('statusLine on in the plugin settings pins the line in the desktop app', options({ statusLine: 'on' }), async ($, on) => {
@@ -322,7 +322,7 @@ test('the band takes its fields from /cache band too', async ($, on) => {
   await start($)
   await step($)
   await cache($, 'band set account model cache 7d')
-  const ui = await $.ui.mount({ plugin: 'cache-meter', component: 'AbovePrompt', surface: 'desktop', props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 4, bodyColumns: 200, scroll: { offset: 0, bodyRows: 4 }, view: {} } } as never)
+  const ui = await $.ui.mount({ plugin: 'vitals', component: 'AbovePrompt', surface: 'desktop', props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 4, bodyColumns: 200, scroll: { offset: 0, bodyRows: 4 }, view: {} } } as never)
   const line = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('')
   await ui.unmount()
   expect(line.startsWith('A  │  Opus 5.5  │  ● Cache Warm 1h 00m left  │  Weekly 55% 1d 14h')).toBe(true)
@@ -387,7 +387,7 @@ test('an Alfred that is down never holds the session, and the pane says so', opt
   mock.clock(on, { now: NOW })
   await start($)
   await settle($)
-  const ui = await $.ui.mount({ plugin: 'cache-meter', component: 'Pane', requestId: 'cache-meter', surface: 'desktop', props: { title: 'Prompt Cache', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} } } as never)
+  const ui = await $.ui.mount({ plugin: 'vitals', component: 'Pane', requestId: 'vitals', surface: 'desktop', props: { title: 'Prompt Cache', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} } } as never)
   // The account is on the Now tab, the Alfred card on Settings.
   expect(await ui.find({ type: 'Text', text: /konto-a@example.com/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'Alfred' })).toBeUndefined()
@@ -398,7 +398,7 @@ test('an Alfred that is down never holds the session, and the pane says so', opt
   await ui.unmount()
 })
 
-test('other plugins read the session from $.sessionMeter, never the e-mail', async () => {
+test('other plugins read the session from $.vitals, never the e-mail', async () => {
   const who = { label: 'B', configDir: `${HOME}/.claude-b`, email: 'konto-b@example.com', model: 'claude-opus-5-5', effort: 'medium' }
   const view = viewOf({ lastAt: NOW - 18 * 60_000, ctx: 301_000, window: 1_000_000, model: 'claude-opus-5-5', effort: 'medium' }, NOW, '1h')
   const st = { requests: 4, read: 960, write: 20, uncached: 20, output: 50, savedUsd: 1, coldWrites: 0, coldUsd: 0, last: null }
@@ -412,4 +412,14 @@ test('other plugins read the session from $.sessionMeter, never the e-mail', asy
   expect(JSON.stringify(snap)).not.toContain('example.com')
   setLatest(snap)
   expect(await meterApi().snapshot()).toEqual(snap)
+})
+
+test('the old /cache answers as /vitals does', async ($, on) => {
+  world(on, { limits: LIMITS_B })
+  mock.clock(on, { now: NOW })
+  await start($)
+  const viaOld = ((await $.command.run({ command: 'cache', args: 'fields' } as never)) as { text?: string }).text ?? ''
+  const viaNew = ((await $.command.run({ command: 'vitals', args: 'fields' } as never)) as { text?: string }).text ?? ''
+  expect(viaOld).toContain('Band:')
+  expect(viaOld).toBe(viaNew)
 })

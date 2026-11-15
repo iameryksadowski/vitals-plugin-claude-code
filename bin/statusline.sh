@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Cache Meter status line for the terminal.
+# Vitals status line for the terminal.
 #
 # The plugin draws the line itself (the fields you chose with /plugin configure
-# or /cache line ...) and writes it per session to $TMPDIR/cache-meter/<session>.line.
+# or /cache line ...) and writes it per session to $TMPDIR/vitals/<session>.line.
 # This script only prints that file. Before the plugin has written it (the first
 # moment of a session, or with the plugin off) it prints a short line from the
 # status line JSON Claude Code hands it: account, model, limits and context.
@@ -10,13 +10,13 @@
 #
 # settings.json of each account:
 #   "statusLine": {"type": "command",
-#     "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/cachemeter/bin/statusline.sh\""}
+#     "command": "bash \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/vitals/bin/statusline.sh\""}
 set -u
 
 input="$(cat)"
 session="$(printf '%s' "$input" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9_.-]*\)".*/\1/p' | head -1)"
 dir="${TMPDIR:-/tmp}"
-dir="${dir%/}/cache-meter"
+dir="${dir%/}/vitals"
 if [ -n "$session" ] && [ -s "$dir/$session.line" ]; then
   cat "$dir/$session.line"
   exit 0

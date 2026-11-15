@@ -77,7 +77,7 @@ export type Who = {
 }
 
 /**
- * Fields chosen with /cache, over the plugin settings; null follows the
+ * Fields chosen with /vitals, over the plugin settings; null follows the
  * settings. `status` is where the status line is pinned.
  */
 export type Layout = { band: string[] | null; line: string[] | null; status: 'auto' | 'on' | 'off' | null }
@@ -108,14 +108,14 @@ export type ContextInfo = {
 export type PaneTab = 'now' | 'context' | 'cost' | 'timeline' | 'settings'
 
 /** One usage window of the account, as the API reports it. */
-export type SessionMeterLimit = { kind: string; percentUsed: number; resetsAt: string | null }
+export type VitalsLimit = { kind: string; percentUsed: number; resetsAt: string | null }
 
 /**
- * What `$.sessionMeter.snapshot()` gives another plugin: this session's account,
+ * What `$.vitals.snapshot()` gives another plugin: this session's account,
  * cache, context and limits as the plugin last drew them. Never the e-mail, never
  * anything said in the session. Times are Unix milliseconds, money is USD at API list prices.
  */
-export type SessionMeterSnapshot = {
+export type VitalsSnapshot = {
   at: number
   sessionId: string
   account: { label: string; configDir: string }
@@ -140,23 +140,23 @@ export type SessionMeterSnapshot = {
     /** Why compacting now is worth it, or null. */
     advice: string | null
   }
-  limits: SessionMeterLimit[]
+  limits: VitalsLimit[]
   session: { requests: number; hitPercent: number | null; usd: number | null }
 }
 
-/** The data other plugins read: list this plugin under `dependencies` and call `$.sessionMeter.snapshot()`. */
-export type SessionMeter = {
+/** The data other plugins read: list this plugin under `dependencies` and call `$.vitals.snapshot()`. */
+export type Vitals = {
   /** The latest reading, refreshed every 15 seconds and after each reply; null before the first. */
-  snapshot: () => Promise<SessionMeterSnapshot | null>
+  snapshot: () => Promise<VitalsSnapshot | null>
 }
 
 declare module 'claude-code' {
   interface EngineInterface {
-    sessionMeter: SessionMeter
+    vitals: Vitals
   }
 
   interface PluginState {
-    'cache-meter': {
+    'vitals': {
       facts: Shaped<CacheFacts | null>
       limits: Shaped<Limit[]>
       stats: Shaped<Stats>

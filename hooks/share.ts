@@ -1,18 +1,18 @@
-// The reading other plugins get from $.sessionMeter: the latest snapshot this session drew. Pure, no engine.
+// The reading other plugins get from $.vitals: the latest snapshot this session drew. Pure, no engine.
 
-import type { Limit, SessionMeter, SessionMeterSnapshot, Stats } from '../types'
+import type { Limit, Vitals, VitalsSnapshot, Stats } from '../types'
 import type { CacheView, Ttl } from './cache'
 import { pctDown } from './cache'
 
-let latest: SessionMeterSnapshot | null = null
+let latest: VitalsSnapshot | null = null
 
 /** Keeps the newest reading, as the status line refreshes. */
-export const setLatest = (s: SessionMeterSnapshot): void => {
+export const setLatest = (s: VitalsSnapshot): void => {
   latest = s
 }
 
-/** What `$.sessionMeter` hands other plugins: a read of the latest snapshot, nothing else. */
-export const meterApi = (): SessionMeter => ({ snapshot: async () => latest })
+/** What `$.vitals` hands other plugins: a read of the latest snapshot, nothing else. */
+export const meterApi = (): Vitals => ({ snapshot: async () => latest })
 
 /** The figures a snapshot is made of, as the plugin draws them. */
 export type ShareInput = {
@@ -31,7 +31,7 @@ export type ShareInput = {
 }
 
 /** The snapshot other plugins read: no e-mail, nothing said in the session. */
-export const shareOf = (s: ShareInput, id: string): SessionMeterSnapshot => {
+export const shareOf = (s: ShareInput, id: string): VitalsSnapshot => {
   const v = s.view
   const inputs = s.st.read + s.st.write + s.st.uncached
   return {

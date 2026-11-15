@@ -1,17 +1,19 @@
 {
-  "name": "cache-meter",
-  "displayName": "Cache Meter",
+  "name": "vitals",
+  "displayName": "Vitals",
   "version": "0.6.0",
-  "description": "Prompt cache, usage limits and your account at a glance in Claude Code: a band above the prompt and a status line with the fields you choose (account, e-mail, model, effort, mode, cache warm or cold, next message cost, context, hit rate, 5-hour and weekly limits with resets, session cost). Works in the terminal and the desktop app. /cache opens the full breakdown, with an optional Keep Warm. By Eryk Sadowski.",
+  "description": "Everything about the session Claude Code does not show on its own, in one row above the prompt: prompt cache warm or cold, what the next message costs, the account and its usage limits with resets, the context and when to compact. A pane with Now, Context, Cost, Timeline and Settings; a terminal status line with the fields you choose; $.vitals for other plugins. Works in the terminal and the desktop app. By Eryk Sadowski.",
   "author": {
     "name": "Eryk Sadowski",
     "url": "https://eryksadowski.com"
   },
-  "homepage": "https://github.com/iameryksadowski/cachemeter-plugin-claude-code",
-  "repository": "https://github.com/iameryksadowski/cachemeter-plugin-claude-code",
+  "homepage": "https://github.com/iameryksadowski/vitals-plugin-claude-code",
+  "repository": "https://github.com/iameryksadowski/vitals-plugin-claude-code",
   "license": "MIT",
   "keywords": [
     "account",
+    "compaction",
+    "context",
     "cost",
     "keep-warm",
     "mod",
@@ -19,7 +21,9 @@
     "rate-limit",
     "status",
     "statusline",
-    "usage"
+    "timeline",
+    "usage",
+    "vitals"
   ],
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -37,7 +41,7 @@
     "guard": {
       "type": "string",
       "title": "Cold send guard",
-      "description": "Default for every repo. off: nothing. confirm: hold a message sent into a cold cache once and show the price, the resend goes through. warn: only show the price. A repo can keep its own (/cache guard repo on|off), a session too (/cache guard, or the pane).",
+      "description": "Default for every repo. off: nothing. confirm: hold a message sent into a cold cache once and show the price, the resend goes through. warn: only show the price. A repo can keep its own (/vitals guard repo on|off), a session too (/vitals guard, or the pane).",
       "default": "off",
       "options": [
         "off",
@@ -48,7 +52,7 @@
     "keepWarm": {
       "type": "string",
       "title": "Keep Warm at start",
-      "description": "Default for every repo. off: no pings. on: every new session starts with Keep Warm on. A repo can keep its own (/cache warm repo on|off), a session too (/cache warm, or the pane).",
+      "description": "Default for every repo. off: no pings. on: every new session starts with Keep Warm on. A repo can keep its own (/vitals warm repo on|off), a session too (/vitals warm, or the pane).",
       "default": "off",
       "options": [
         "off",
@@ -70,19 +74,19 @@
     "bandFields": {
       "type": "string",
       "title": "Band fields",
-      "description": "Fields of the one row above the prompt, in order, comma separated. Empty: cache, next, account, 5h, 7d, spend, context, compact. All: account, email, model, effort, mode, style, dir, branch, cache, next, ifcold, context, compact, hit, 5h, 7d, spend, session. /cache band ... changes it per account.",
+      "description": "Fields of the one row above the prompt, in order, comma separated. Empty: cache, next, account, 5h, 7d, spend, context, compact. All: account, email, model, effort, mode, style, dir, branch, cache, next, ifcold, context, compact, hit, 5h, 7d, spend, session. /vitals band ... changes it per account.",
       "default": "cache, next, account, 5h, 7d, spend, context, compact"
     },
     "lineFields": {
       "type": "string",
       "title": "Status line fields",
-      "description": "Fields of the terminal status line, in order, comma separated (same names as the band). Empty: account, model, effort, cache, next, 5h, 7d, context, compact, branch. /cache line ... changes it per account.",
+      "description": "Fields of the terminal status line, in order, comma separated (same names as the band). Empty: account, model, effort, cache, next, 5h, 7d, context, compact, branch. /vitals line ... changes it per account.",
       "default": "account, model, effort, cache, next, 5h, 7d, context, compact, branch"
     },
     "statusLine": {
       "type": "string",
       "title": "Status line under the prompt",
-      "description": "auto: the terminal's statusLine script prints it; the band above the prompt covers the desktop app, so nothing is pinned twice. on: also pinned under the prompt (the desktop app too). off: nowhere. /cache line on|off|auto per account.",
+      "description": "auto: the terminal's statusLine script prints it; the band above the prompt covers the desktop app, so nothing is pinned twice. on: also pinned under the prompt (the desktop app too). off: nowhere. /vitals line on|off|auto per account.",
       "default": "auto",
       "options": [
         "auto",

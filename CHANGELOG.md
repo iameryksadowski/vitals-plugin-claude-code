@@ -4,14 +4,18 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [0.6.0] - 2026-11-15
 
+### Renamed
+
+- Cache Meter is now **Vitals**: repo `iameryksadowski/vitals-plugin-claude-code`, plugin `vitals@vitals`, command `/vitals` (`/cache` still works), statusLine script under `plugins/marketplaces/vitals/`. Settings and the fields chosen with `/cache` start fresh under the new name.
+
 ### Added
 
-- The pane has five tabs: Now, Context, Cost, Timeline and Settings. `/cache now|context|cost|timeline|settings` opens it on one.
+- The pane has five tabs: Now, Context, Cost, Timeline and Settings. `/vitals now|context|cost|timeline|settings` opens it on one.
 - Context tab: how full the context is, when auto-compact runs with a switch for it, what fills the context as `/context` counts it (estimated locally, no request) and the heaviest MCP servers.
-- A compact hint (`compact` field, on by default): the band says when compacting is worth it, when the cache is cold and the context is over `compactAt` (50%), when auto-compact is within 10 points, or over 80% with auto-compact off. `/cache compact` and Compact Now compact; `/cache autocompact on|off` switches Claude Code's auto-compact. Settings `compactHint` and `compactAt`.
+- A compact hint (`compact` field, on by default): the band says when compacting is worth it, when the cache is cold and the context is over `compactAt` (50%), when auto-compact is within 10 points, or over 80% with auto-compact off. `/vitals compact` and Compact Now compact; `/vitals autocompact on|off` switches Claude Code's auto-compact. Settings `compactHint` and `compactAt`.
 - Timeline tab: when each message went and how long each reply took, with its tool count, and the breaks after which the cache went cold.
 - In its last minutes the band also says what the next message costs once the cache is cold.
-- `$.sessionMeter.snapshot()` for other plugins: this session's account, cache, context with auto-compact and advice, limits and session figures. No e-mail, nothing said in the session.
+- `$.vitals.snapshot()` for other plugins: this session's account, cache, context with auto-compact and advice, limits and session figures. No e-mail, nothing said in the session.
 
 ### Changed
 

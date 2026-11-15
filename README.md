@@ -1,41 +1,54 @@
 # Cache Meter
 
-Prompt cache, usage limits and your account at a glance in Claude Code, in the terminal and in the desktop app. A band above the prompt and a status line, each with the fields you choose; the full breakdown one click away.
+Everything about the session Claude Code does not show on its own, in one row above the prompt, in the terminal and in the desktop app: the prompt cache, what the next message costs, the account and its usage limit, the context and when to compact. The rest is one click away in a side pane.
 
 ```
-● Cache Warm 42m left  │  Next $0.06  │  If Cold $2.41  │  Context 301k 30%  │  Hit Rate 96%  │  Weekly 88% 2d 4h  │  Session $3.50    Details
-[A] name@example.com · Opus 5.5 · medium · 5h 34% (14:40) · 7d 55% (Mon 03:00) · ctx 31%
+● Warm 42m  │  Next $0.06  │  A  │  Weekly 5% 6d 15h  │  Context 301k 30%                         Details
+A · Opus 5.5 · medium · ● Warm 42m · next $0.06 · 7d 5% 6d 15h · ctx 30% · main
 ```
 
-## Install
-
-Private repo: your GitHub account needs access to it. From a shell:
-
-```
-claude plugin marketplace add iameryksadowski/cachemeter-plugin-claude-code
-claude plugin install cache-meter@cachemeter --scope user
-```
-
-Or at the prompt of a Claude Code session: `/plugin marketplace add iameryksadowski/cachemeter-plugin-claude-code`, then `/plugin install cache-meter@cachemeter`. Update later with `claude plugin marketplace update cachemeter`.
+The first line is the band above the prompt. The second is the terminal status line, which also carries what the terminal footer lacks (model, effort, branch). Nothing Claude Code already shows (the desktop footer has the model, effort and permission mode) is repeated by default.
 
 ## What it shows
 
-- **Cache state**: warm with time left, a warning color in the last 10 minutes (last minute on a 5m TTL), cold with idle time.
-- **Next message**: what re-sending the context costs while warm (cache read) and once cold (cache write).
-- **Context**: tokens the next request re-sends and the share of the model's window.
-- **Usage limits**: percent used and time to reset for each limit your plan has (Weekly, and 5-Hour where the plan reports one); warning at 80%, error at 95%.
+- **Cache state**: warm with time left, a warning color in the last 10 minutes (last minute on a 5m TTL), cold with idle time. After a compaction, or a session that comes back after a restart, it knows the cache is cold.
+- **Next message**: what re-sending the context costs while warm (cache read) and once cold (cache write). In the last minutes it also says what waiting longer would cost.
+- **Account and usage limits**: which account (config folder) the session runs on, and percent used with the time to reset for each limit your plan reports (an Ultra plan reports only the weekly one); warning at 80%, error at 95%. Resets read as `6d 15h`, within a day as `14h 20m`.
+- **Context and compaction**: the share of the window, when auto-compact runs, and a hint when compacting is worth it.
 - **Hit rate and session cost**: share of input served from cache on the main thread, and the engine's session total.
 
-Parts drop out strictly by priority as the window narrows: the cache state stays always, then your main usage limit, then the next message cost and the context. `Details` (or `/cache`) opens a side pane with the full breakdown: TTL bar, read and write rates, cold/warm ratio, tokens read, written and uncached, what caching saved, cold writes paid, the last request and every usage limit.
+Parts drop out strictly by priority as the window narrows: the cache state stays always, then the account and its main limit, then the next message cost, the compact hint and the context.
+
+## The pane
+
+`Details`, or `/cache`, opens a side pane with five tabs. `/cache now`, `/cache context`, `/cache cost`, `/cache timeline` and `/cache settings` open it on that tab.
+
+| Tab | Shows |
+| --- | --- |
+| Now | Account (e-mail, model, effort, mode, output style, folder and branch), the prompt cache with its TTL bar, what the next message costs warm and cold, every usage limit |
+| Context | How full the context is, auto-compact (on or off, and at what share) with a switch, the compact advice and **Compact Now**, what fills the context (as `/context` counts it, estimated locally) and the heaviest MCP servers |
+| Cost | Requests, cache hit rate, tokens read, written and uncached, what caching saved, cold writes paid, the last request, the session total |
+| Timeline | When each message went and how long each reply took, with its tool count, and the breaks after which the cache went cold. Claude Code does not show these times |
+| Settings | The status line and where it is drawn, Keep Warm, the cold send guard, the compact hint, the Alfred send |
+
+## Compaction
+
+Compacting costs about one pass over the context. It is cheapest at a break you choose:
+
+- **The cache has gone cold and the context is large** (over `compactAt`, 50% by default): the next message pays that pass anyway, so compacting first costs about the same and every message after it is smaller.
+- **Auto-compact is near** (within 10 points of its threshold): better now, at a natural break, than when it cuts in mid-task.
+- **Auto-compact is off** and the context is over 80%.
+
+Then the band shows `Compact` with the reason. `/cache compact` (or Compact Now in the pane) compacts, the same as `/compact`. `/cache autocompact on|off` (or the switch in the pane) switches Claude Code's own auto-compact, the same row as in `/config`. `compactHint: off` hides the hint.
 
 ## Status line
 
-One line with the fields you pick, in the order you pick: by default the account, its e-mail, the model with its version, the effort, the 5-hour and weekly limits with their reset, and the context share. It is drawn in two ways, both from the same fields:
+One line with the fields you pick, in the order you pick: by default the account, the model with its version, the effort, the cache, the next message cost, the 5-hour and weekly limits with their reset, the context share, the compact hint and the branch.
 
 | Where | How it is drawn |
 | --- | --- |
-| Desktop app (Code tab) | Pinned under the prompt by the plugin (`statusLine: auto`). The desktop app does not run a `statusLine` command. |
-| Terminal | The account's `statusLine` command runs the plugin's script, which prints the line the plugin wrote for that session. Without that script, the plugin pins the line under the prompt there too. |
+| Terminal | The account's `statusLine` command runs the plugin's script, which prints the line the plugin wrote for that session (`statusLine: auto`). |
+| Desktop app (Code tab) | Not drawn by default: the desktop app does not run a `statusLine` command, the band shows the same and the footer already has the model and effort. `statusLine: on` (or `/cache line on`) pins it under the prompt there too. |
 
 The terminal script, in each account's `settings.json`:
 
@@ -64,6 +77,7 @@ The band and the status line take the same fields. The band keeps them strictly 
 | `cache` | Prompt cache warm or cold, time left or idle time |
 | `next`, `ifcold` | What the next message costs now, and once the cache is cold |
 | `context` | Context tokens and share of the window |
+| `compact` | A hint to compact, with the reason, only when it is worth it |
 | `hit` | Cache hit rate of the session |
 | `5h`, `7d`, `spend` | Usage limits with their reset, each only where your plan reports it |
 | `session` | What the session has cost (API list prices) |
@@ -78,12 +92,19 @@ Change them for this account (every session after, over the plugin settings):
 /cache line show branch mode
 /cache line set account model 7d context
 /cache line reset                back to the plugin settings
-/cache line on | off | auto      pin it under the prompt always, never, or where no terminal script draws it
+/cache line on | off | auto      also pin it under the prompt, draw it nowhere, or only in the terminal script
 /cache band show account model   the same for the band
 /cache fields                    every field and both lists
 ```
 
 Or in `/plugin configure cache-meter@cachemeter` (and `/config`): `bandFields`, `lineFields`, `statusLine`, `resetStyle`, `accountLabels`.
+
+Compaction from the prompt:
+
+```
+/cache compact                   compact now, as /compact does
+/cache autocompact on | off      switch Claude Code's auto-compact, as /config does
+```
 
 What Claude Code does not hand a plugin, the plugin does not show: fast mode has no reading for plugins yet.
 
@@ -135,10 +156,12 @@ All are in `/plugin configure cache-meter@cachemeter` and `/config` (stored as `
 | `guard` | `off`, `confirm`, `warn` | `off` |
 | `keepWarm` | `off`, `on` | `off` |
 | `keepWarmFor` | `1h`, `2h`, `4h`, `8h` | `2h` after your last message |
-| `bandFields` | fields, in order | `cache, next, ifcold, context, hit, 5h, 7d, spend, session` |
-| `lineFields` | fields, in order | `account, email, model, effort, 5h, 7d, context` |
-| `statusLine` | `auto`, `on`, `off` | `auto`: pinned wherever no terminal script draws it |
-| `resetStyle` | `auto`, `countdown`, `clock`, `both` | `auto`: a countdown in the band, the clock in the status line |
+| `bandFields` | fields, in order | `cache, next, account, 5h, 7d, spend, context, compact` |
+| `lineFields` | fields, in order | `account, model, effort, cache, next, 5h, 7d, context, compact, branch` |
+| `statusLine` | `auto`, `on`, `off` | `auto`: the terminal script only |
+| `resetStyle` | `auto`, `countdown`, `clock`, `both` | `auto`: a countdown, `6d 15h` or `14h 20m` |
+| `compactHint` | `on`, `off` | `on` |
+| `compactAt` | `30` to `70` | `50`: with a cold cache, the context share from which the hint shows |
 | `accountLabels` | `.claude=A, .claude-b=Work` | a letter from the folder |
 | `alfred` | `off`, `on` | `off` |
 | `alfredHome` | a folder | `~/Development/alfred-app` |

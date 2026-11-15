@@ -28,12 +28,16 @@ case "$config" in
   ""|"$HOME/.claude"|"$HOME/.claude/") label="A" ;;
   *) label="$(basename "$config" | sed -e 's/^\.claude[-_.]//' -e 's/^\.//' | tr '[:lower:]' '[:upper:]')" ;;
 esac
-command -v jq >/dev/null 2>&1 || { printf '[%s]' "$label"; exit 0; }
-printf '%s' "$input" | jq -r --arg label "$label" '
+command -v jq >/dev/null 2>&1 || { printf '%s' "$label"; exit 0; }
+printf '%s' "$input" | jq -r --arg label "$label" --argjson now "$(date +%s)" '
   def pct: if type == "number" then ((. + 0.5) | floor | tostring) + "%" else empty end;
-  def hm: if type == "number" then (localtime | strftime("%H:%M")) else empty end;
-  [ "[" + $label + "]" + (if (.model.display_name // "") != "" then " " + .model.display_name else "" end),
-    (.rate_limits.five_hour | if . then "5h " + (.used_percentage | pct) + (if .resets_at then " (" + (.resets_at | hm) + ")" else "" end) else empty end),
-    (.rate_limits.seven_day | if . then "7d " + (.used_percentage | pct) else empty end),
+  def left: if type == "number" then (. - $now) as $s
+    | if $s <= 0 then "reset" elif $s >= 86400 then "\(($s / 86400) | floor)d \((($s % 86400) / 3600) | floor)h"
+      else "\(($s / 3600) | floor)h \((($s % 3600) / 60) | floor)m" end else empty end;
+  def win($name): if . then $name + " " + (.used_percentage | pct) + (if .resets_at then " " + (.resets_at | left) else "" end) else empty end;
+  [ $label,
+    (.model.display_name // empty),
+    (.rate_limits.five_hour | win("5h")),
+    (.rate_limits.seven_day | win("7d")),
     (.context_window.used_percentage | if type == "number" then "ctx " + pct else empty end)
-  ] | map(select(. != null and . != "")) | join(" · ")' 2>/dev/null || printf '[%s]' "$label"
+  ] | map(select(. != null and . != "")) | join(" · ")' 2>/dev/null || printf '%s' "$label"

@@ -1,7 +1,7 @@
 {
   "name": "cache-meter",
   "displayName": "Cache Meter",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Prompt cache, usage limits and your account at a glance in Claude Code: a band above the prompt and a status line with the fields you choose (account, e-mail, model, effort, mode, cache warm or cold, next message cost, context, hit rate, 5-hour and weekly limits with resets, session cost). Works in the terminal and the desktop app. /cache opens the full breakdown, with an optional Keep Warm. By Eryk Sadowski.",
   "author": {
     "name": "Eryk Sadowski",
@@ -70,19 +70,19 @@
     "bandFields": {
       "type": "string",
       "title": "Band fields",
-      "description": "Fields of the band above the prompt, in order, comma separated. Empty: cache, next, ifcold, context, hit, 5h, 7d, spend, session. All: account, email, model, effort, mode, style, dir, branch, cache, next, ifcold, context, hit, 5h, 7d, spend, session. /cache band ... changes it per account.",
-      "default": "cache, next, ifcold, context, hit, 5h, 7d, spend, session"
+      "description": "Fields of the one row above the prompt, in order, comma separated. Empty: cache, next, account, 5h, 7d, spend, context, compact. All: account, email, model, effort, mode, style, dir, branch, cache, next, ifcold, context, compact, hit, 5h, 7d, spend, session. /cache band ... changes it per account.",
+      "default": "cache, next, account, 5h, 7d, spend, context, compact"
     },
     "lineFields": {
       "type": "string",
       "title": "Status line fields",
-      "description": "Fields of the status line, in order, comma separated (same names as the band). Empty: account, email, model, effort, 5h, 7d, context. /cache line ... changes it per account.",
-      "default": "account, email, model, effort, 5h, 7d, context"
+      "description": "Fields of the terminal status line, in order, comma separated (same names as the band). Empty: account, model, effort, cache, next, 5h, 7d, context, compact, branch. /cache line ... changes it per account.",
+      "default": "account, model, effort, cache, next, 5h, 7d, context, compact, branch"
     },
     "statusLine": {
       "type": "string",
       "title": "Status line under the prompt",
-      "description": "auto: pinned under the prompt wherever no terminal statusLine script draws it (the desktop app among them). on: always pinned. off: never pinned (the terminal script still prints it). /cache line on|off|auto per account.",
+      "description": "auto: the terminal's statusLine script prints it; the band above the prompt covers the desktop app, so nothing is pinned twice. on: also pinned under the prompt (the desktop app too). off: nowhere. /cache line on|off|auto per account.",
       "default": "auto",
       "options": [
         "auto",
@@ -93,7 +93,7 @@
     "resetStyle": {
       "type": "string",
       "title": "Limit reset as",
-      "description": "auto: a countdown in the band, the clock time in the status line. countdown: 2d 4h. clock: 14:40, or Sun 05:00 further off. both.",
+      "description": "auto and countdown: 6d 15h, then 14h 20m within a day. clock: 14:40, or Sun 05:00 further off. both.",
       "default": "auto",
       "options": [
         "auto",
@@ -129,6 +129,29 @@
       "title": "Alfred URL",
       "description": "The local Alfred engine.",
       "default": "http://127.0.0.1:8765"
+    },
+    "compactHint": {
+      "type": "string",
+      "title": "Compact hint",
+      "description": "on: the band says when compacting is worth it (the cache is cold and the context large, or auto-compact is near) and the pane's Context tab offers Compact Now. off: no hint.",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
+      ]
+    },
+    "compactAt": {
+      "type": "string",
+      "title": "Compact hint from",
+      "description": "With a cold cache, the context share of the window from which the hint shows. Near auto-compact it shows anyway.",
+      "default": "50",
+      "options": [
+        "30",
+        "40",
+        "50",
+        "60",
+        "70"
+      ]
     }
   }
 }

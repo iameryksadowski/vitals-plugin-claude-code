@@ -154,21 +154,26 @@ test('a reset reads on the clock in the person zone: the time within a day, the 
 const data = (over: Partial<LineData> = {}): LineData => ({
   label: 'B', email: 'konto-b@example.com', mode: null, style: null, dir: 'app', branch: 'main', model: 'Opus 5.5', effort: 'medium',
   view: viewOf({ lastAt: NOW - 18 * 60_000, ctx: 301_000, window: 1_000_000, model: 'claude-opus-5-5', effort: 'medium' }, NOW, '1h'),
-  switched: false, warmOn: false, requests: 3, hit: 96, context: { tokens: 300_000, window: 1_000_000, percent: 30 },
+  switched: false, warmOn: false, requests: 3, hit: 96, context: { tokens: 300_000, window: 1_000_000, percent: 30 }, advice: null,
   limits: LIMITS_B, now: NOW, total: 3.5, reset: 'auto', tzMin: 60, ...over,
 })
 
 test('the status line reads as the account line did, every field on request', () => {
+  // The bare label, every field split by a middle dot, resets as a countdown.
   expect(lineOf(['account', 'email', 'model', 'effort', '5h', '7d', 'context'], data())).toBe(
-    '[B] konto-b@example.com · Opus 5.5 · medium · 5h 34% (14:40) · 7d 55% (Mon 03:00) · ctx 30%',
+    'B · konto-b@example.com · Opus 5.5 · medium · 5h 34% 1h 40m · 7d 55% 1d 14h · ctx 30%',
   )
   expect(lineOf(['cache', 'next', 'ifcold', 'hit', 'session', 'dir', 'branch', 'mode'], data({ mode: 'plan' }))).toBe(
     '● Warm 42m · next $0.06 · if cold $2.41 · hit 96% · $3.50 · app · ⎇ main · plan',
   )
   expect(lineOf(['7d'], data({ reset: 'countdown' }))).toBe('7d 55% 1d 14h')
+  expect(lineOf(['5h', '7d'], data({ reset: 'clock' }))).toBe('5h 34% (14:40) · 7d 55% (Mon 03:00)')
   expect(lineOf(['7d'], data({ reset: 'both' }))).toBe('7d 55% 1d 14h (Mon 03:00)')
+  // The compact hint shows only when there is advice.
+  expect(lineOf(['context', 'compact'], data())).toBe('ctx 30%')
+  expect(lineOf(['context', 'compact'], data({ advice: 'auto-compact at 33%' }))).toBe('ctx 30% · compact?')
   // Nothing true to show is left out, never guessed.
-  expect(lineOf(['email', 'style', 'spend', 'account'], data({ email: null }))).toBe('[B]')
+  expect(lineOf(['email', 'style', 'spend', 'account'], data({ email: null }))).toBe('B')
 })
 
 test('the Alfred reading carries limits, context and model, never the e-mail', () => {
@@ -188,36 +193,54 @@ test('the Alfred reading carries limits, context and model, never the e-mail', (
 
 // --- the mod ---
 
-test('each account shows its own figures: B and C never share a line', async ($, on) => {
+/** The account fields the old account line had, pinned so a test can read it. */
+const ACCOUNT_LINE = { statusLine: 'on', lineFields: 'account, email, model, effort, 5h, 7d, context' }
+
+test('each account shows its own figures: B and C never share a line', options(ACCOUNT_LINE), async ($, on) => {
   const seen = world(on, { configDir: `${HOME}/.claude-b`, email: 'konto-b@example.com', limits: LIMITS_B })
   mock.clock(on, { now: NOW })
   await start($)
   const b = seen.status.at(-1)
-  expect(b).toBe('[B] konto-b@example.com · Opus 5.5 · medium · 5h 34% (14:40) · 7d 55% (Mon 03:00) · ctx 30%')
+  expect(b).toBe('B · konto-b@example.com · Opus 5.5 · medium · 5h 34% 1h 40m · 7d 55% 1d 14h · ctx 30%')
 })
 
-test('account C reads its own folder, e-mail and limits', async ($, on) => {
+test('account C reads its own folder, e-mail and limits', options(ACCOUNT_LINE), async ($, on) => {
   const seen = world(on, { configDir: `${HOME}/.claude-c`, email: 'konto-c@example.com', limits: LIMITS_C })
   mock.clock(on, { now: NOW })
   await start($)
-  expect(seen.status.at(-1)).toBe('[C] konto-c@example.com · Opus 5.5 · medium · 7d 97% (Sun 15:00) · ctx 30%')
+  expect(seen.status.at(-1)).toBe('C · konto-c@example.com · Opus 5.5 · medium · 7d 97% 1d 2h · ctx 30%')
 })
 
-test('in the desktop app the line is pinned under the prompt; in a terminal with the script it is written for the script', async ($, on) => {
+test('in a terminal with the script the line is written for the script, with the default fields, and nothing is pinned', async ($, on) => {
   const seen = world(on, { surfaces: ['terminal'], statusLine: 'bash "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/cachemeter/bin/statusline.sh"', limits: LIMITS_B })
   mock.clock(on, { now: NOW })
   await start($, 'terminal')
   expect(seen.status.filter(Boolean)).toEqual([])
-  expect(seen.writes.get('/tmp/t/cache-meter/sess-1.line')).toBe('[A] konto-a@example.com · Opus 5.5 · medium · 5h 34% (14:40) · 7d 55% (Mon 03:00) · ctx 30%')
+  // Before the first reply there is no cache, next price or compact hint to show.
+  expect(seen.writes.get('/tmp/t/cache-meter/sess-1.line')).toBe('A · Opus 5.5 · medium · 5h 34% 1h 40m · 7d 55% 1d 14h · ctx 30% · ⎇ main')
+  await step($)
+  // The next measurement after the reply draws the line again.
+  await $.session.measure({ changed: ['context'], startedAt: 0, context: { window: 1_000_000 }, rateLimits: LIMITS_B } as never)
+  await settle($)
+  expect(seen.writes.get('/tmp/t/cache-meter/sess-1.line')).toBe('A · Opus 5.5 · xhigh · ● Warm 1h 00m · next $0.06 · 5h 34% 1h 40m · 7d 55% 1d 14h · ctx 30% · ⎇ main')
+  expect(seen.status.filter(Boolean)).toEqual([])
 })
 
-test('a terminal without the script gets the pinned line, and nothing is written', async ($, on) => {
-  const seen = world(on, { surfaces: ['terminal'], statusLine: 'bash $HOME/Development/alfred-app/scripts/statusline.sh' })
-  mock.clock(on, { now: NOW })
-  await start($, 'terminal')
-  expect(seen.status.at(-1)).toContain('[A]')
-  expect(seen.writes.size).toBe(0)
-})
+for (const [where, surface, statusLine] of [
+  ['the desktop app', 'desktop', undefined],
+  ['a terminal without the script', 'terminal', 'bash $HOME/Development/alfred-app/scripts/statusline.sh'],
+] as const) {
+  test(`statusLine auto pins nothing in ${where}, and nothing is written`, async ($, on) => {
+    const seen = world(on, { surfaces: [surface], ...(statusLine ? { statusLine } : {}), limits: LIMITS_B })
+    mock.clock(on, { now: NOW })
+    await start($, surface)
+    await step($)
+    await settle($)
+    expect(seen.status.filter(Boolean)).toEqual([])
+    expect(seen.writes.size).toBe(0)
+    expect(await cache($, 'line')).toContain('Pinned under the prompt: auto.')
+  })
+}
 
 test('statusLine off pins nothing; on pins it in a terminal with the script too', async ($, on) => {
   const seen = world(on, { surfaces: ['terminal'], statusLine: 'cachemeter/bin/statusline.sh' })
@@ -225,37 +248,49 @@ test('statusLine off pins nothing; on pins it in a terminal with the script too'
   await start($, 'terminal')
   expect(seen.status.filter(Boolean)).toEqual([])
   expect(await cache($, 'line on')).toContain('pinned')
-  expect(seen.status.at(-1)).toContain('[A]')
+  expect(seen.status.at(-1)).toBe('A · Opus 5.5 · medium · ctx 30% · ⎇ main')
   await cache($, 'line off')
   expect(seen.status.at(-1)).toBeUndefined()
+  // The terminal script still gets its line.
+  expect(seen.writes.get('/tmp/t/cache-meter/sess-1.line')).toBe('A · Opus 5.5 · medium · ctx 30% · ⎇ main')
 })
 
-test('/cache line hide, show and set change the line and stay for the account; reset follows the settings', async ($, on) => {
+test('statusLine on in the plugin settings pins the line in the desktop app', options({ statusLine: 'on' }), async ($, on) => {
   const seen = world(on, { limits: LIMITS_B })
   mock.clock(on, { now: NOW })
   await start($)
-  expect(await cache($, 'line hide email effort')).toBe('The status line shows: account, model, 5h, 7d, context.')
-  expect(seen.status.at(-1)).toBe('[A] Opus 5.5 · 5h 34% (14:40) · 7d 55% (Mon 03:00) · ctx 30%')
-  expect(await cache($, 'line show branch')).toContain('context, branch')
-  expect(seen.status.at(-1)).toContain('⎇ main')
+  expect(seen.status.at(-1)).toBe('A · Opus 5.5 · medium · 5h 34% 1h 40m · 7d 55% 1d 14h · ctx 30% · ⎇ main')
+  expect(seen.writes.size).toBe(0)
+})
+
+test('/cache line hide, show and set change the line and stay for the account; reset follows the settings', options({ statusLine: 'on' }), async ($, on) => {
+  const seen = world(on, { limits: LIMITS_B })
+  mock.clock(on, { now: NOW })
+  await start($)
+  expect(await cache($, 'line hide email effort')).toBe('The status line shows: account, model, cache, next, 5h, 7d, context, compact, branch.')
+  expect(seen.status.at(-1)).toBe('A · Opus 5.5 · 5h 34% 1h 40m · 7d 55% 1d 14h · ctx 30% · ⎇ main')
+  expect(await cache($, 'line show email')).toContain('compact, branch, email')
+  expect(seen.status.at(-1)).toContain('⎇ main · konto-a@example.com')
   expect(await cache($, 'line set 7d account nonsense')).toBe('The status line shows: 7d, account. Not a field: nonsense.')
-  expect(seen.status.at(-1)).toBe('7d 55% (Mon 03:00) · [A]')
+  expect(seen.status.at(-1)).toBe('7d 55% 1d 14h · A')
+  expect(seen.store.get('layout')).toEqual({ band: null, line: ['7d', 'account'], status: null })
   expect(await cache($, 'line reset')).toContain('follows the plugin settings again')
-  expect(seen.status.at(-1)).toContain('konto-a@example.com')
+  expect(seen.status.at(-1)).toBe('A · Opus 5.5 · medium · 5h 34% 1h 40m · 7d 55% 1d 14h · ctx 30% · ⎇ main')
 })
 
 test('a stored layout is the next session start', async ($, on) => {
-  world(on, { limits: LIMITS_B, store: { layout: { band: null, line: ['account', 'model'], status: 'on' } } })
+  const seen = world(on, { limits: LIMITS_B, store: { layout: { band: null, line: ['account', 'model'], status: 'on' } } })
   mock.clock(on, { now: NOW })
   await start($)
-  expect(await cache($, 'line')).toContain('Now: [A] Opus 5.5')
+  expect(await cache($, 'line')).toContain('Now: A · Opus 5.5\nPinned under the prompt: on.')
+  expect(seen.status.at(-1)).toBe('A · Opus 5.5')
 })
 
-test('a new session shows the account last known limits before its first reply', async ($, on) => {
+test('a new session shows the account last known limits before its first reply', options({ statusLine: 'on' }), async ($, on) => {
   const seen = world(on, { limits: [], store: { limits: LIMITS_B } })
   mock.clock(on, { now: NOW })
   await start($)
-  expect(seen.status.at(-1)).toBe('[A] konto-a@example.com · Opus 5.5 · medium · 5h 34% (14:40) · 7d 55% (Mon 03:00) · ctx 30%')
+  expect(seen.status.at(-1)).toBe('A · Opus 5.5 · medium · 5h 34% 1h 40m · 7d 55% 1d 14h · ctx 30% · ⎇ main')
 })
 
 test('fresh limits are kept for the next session of the account', async ($, on) => {
@@ -266,11 +301,18 @@ test('fresh limits are kept for the next session of the account', async ($, on) 
   expect(seen.store.get('limits')).toEqual(LIMITS_C)
 })
 
-test('the plugin settings choose the fields and the reset style', options({ lineFields: 'account 7d model', resetStyle: 'both' }), async ($, on) => {
+test('the plugin settings choose the fields and the reset style', options({ lineFields: 'account 7d model', resetStyle: 'both', statusLine: 'on' }), async ($, on) => {
   const seen = world(on, { limits: LIMITS_B })
   mock.clock(on, { now: NOW })
   await start($)
-  expect(seen.status.at(-1)).toBe('[A] 7d 55% 1d 14h (Mon 03:00) · Opus 5.5')
+  expect(seen.status.at(-1)).toBe('A · 7d 55% 1d 14h (Mon 03:00) · Opus 5.5')
+})
+
+test('resetStyle clock puts the status line resets on the clock', options({ lineFields: '5h 7d', resetStyle: 'clock', statusLine: 'on' }), async ($, on) => {
+  const seen = world(on, { limits: LIMITS_B })
+  mock.clock(on, { now: NOW })
+  await start($)
+  expect(seen.status.at(-1)).toBe('5h 34% (14:40) · 7d 55% (Mon 03:00)')
 })
 
 test('the band takes its fields from /cache band too', async ($, on) => {
@@ -282,7 +324,7 @@ test('the band takes its fields from /cache band too', async ($, on) => {
   const ui = await $.ui.mount({ plugin: 'cache-meter', component: 'AbovePrompt', surface: 'desktop', props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 4, bodyColumns: 200, scroll: { offset: 0, bodyRows: 4 }, view: {} } } as never)
   const line = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('')
   await ui.unmount()
-  expect(line.startsWith('[A]  │  Opus 5.5  │  ● Cache Warm 1h 00m left  │  Weekly 55% 1d 14h')).toBe(true)
+  expect(line.startsWith('A  │  Opus 5.5  │  ● Cache Warm 1h 00m left  │  Weekly 55% 1d 14h')).toBe(true)
 })
 
 test('/cache fields lists every field and where each list stands', async ($, on) => {
@@ -290,12 +332,12 @@ test('/cache fields lists every field and where each list stands', async ($, on)
   mock.clock(on, { now: NOW })
   await start($)
   const text = await cache($, 'fields')
-  expect(text).toContain('Band:        cache, next, ifcold, context, hit, 5h, 7d, spend, session')
-  expect(text).toContain('Status line: account, email, model, effort, 5h, 7d, context, pinned auto')
+  expect(text).toContain('Band:        cache, next, account, 5h, 7d, spend, context, compact\n')
+  expect(text).toContain('Status line: account, model, effort, cache, next, 5h, 7d, context, compact, branch, pinned auto\n')
   expect(text).toContain('branch   Git branch')
 })
 
-test('the permission mode and the output style are read as the engine reports them', async ($, on) => {
+test('the permission mode and the output style are read as the engine reports them', options({ statusLine: 'on' }), async ($, on) => {
   const seen = world(on)
   mock.clock(on, { now: NOW })
   await start($)
@@ -303,7 +345,7 @@ test('the permission mode and the output style are read as the engine reports th
   await $.classic.UserPromptSubmit({ hook_event_name: 'UserPromptSubmit', session_id: 's', transcript_path: '/t', cwd: '/work/app', prompt: 'hi', permission_mode: 'plan' } as never)
   await $.prompt.compose({ model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['desktop'], outputStyle: { name: 'Explanatory', isKeepingCodingInstructions: true } } as never)
   await cache($, 'line show context')
-  expect(seen.status.at(-1)).toBe('[A] plan · Style Explanatory · ctx 30%')
+  expect(seen.status.at(-1)).toBe('A · plan · Style Explanatory · ctx 30%')
 })
 
 // --- Alfred ---
@@ -345,8 +387,12 @@ test('an Alfred that is down never holds the session, and the pane says so', opt
   await start($)
   await settle($)
   const ui = await $.ui.mount({ plugin: 'cache-meter', component: 'Pane', requestId: 'cache-meter', surface: 'desktop', props: { title: 'Prompt Cache', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} } } as never)
-  const all = (await ui.findAll({ type: 'Text' })).map(t => t.text)
-  expect(all.some(t => t.startsWith('Not sent') && t.includes('ECONNREFUSED'))).toBe(true)
+  // The account is on the Now tab, the Alfred card on Settings.
   expect(await ui.find({ type: 'Text', text: /konto-a@example.com/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Alfred' })).toBeUndefined()
+  await ui.press({ key: 'tab-settings' })
+  const all = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+  expect(all).toContain('Alfred')
+  expect(all.some(t => t.startsWith('Not sent') && t.includes('ECONNREFUSED'))).toBe(true)
   await ui.unmount()
 })

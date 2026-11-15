@@ -85,6 +85,28 @@ export type Layout = { band: string[] | null; line: string[] | null; status: 'au
 /** The last usage reading sent to the local Alfred engine: when, and how it went. */
 export type AlfredSend = { at: number; ok: boolean; status: number; error: string | null; sent: number }
 
+/** One moment of the session's timeline: a message sent, or a reply with how long it took and how many tools it ran. */
+export type TimelineEntry = { at: number; who: 'you' | 'claude'; text: string | null; ms: number | null; tools: number | null }
+
+/**
+ * The context as /context counts it, read now and then: the auto-compact
+ * threshold in tokens (null when auto-compact is off or unknown), whether it
+ * is on, the window, the largest categories and the heaviest MCP servers.
+ */
+export type ContextInfo = {
+  at: number
+  /** Every category's tokens, as /context totals them. */
+  total: number
+  autoOn: boolean | null
+  threshold: number | null
+  window: number
+  categories: Array<{ name: string; tokens: number }>
+  mcp: Array<{ server: string; tokens: number }>
+}
+
+/** The pane's open tab. */
+export type PaneTab = 'now' | 'context' | 'cost' | 'timeline' | 'settings'
+
 declare module 'claude-code' {
   interface PluginState {
     'cache-meter': {
@@ -100,6 +122,11 @@ declare module 'claude-code' {
       who: Shaped<Who>
       layout: Shaped<Layout>
       alfred: Shaped<AlfredSend>
+      /** The context was compacted and no request has written its cache yet. */
+      compacted: Shaped<boolean>
+      timeline: Shaped<TimelineEntry[]>
+      ctxinfo: Shaped<ContextInfo | null>
+      tab: Shaped<PaneTab>
     }
   }
 }

@@ -67,10 +67,15 @@ export type Who = {
   label: string
   /**
    * Where the label comes from: set with /vitals account, the accountLabels
-   * setting, the config folder's letter, or `single` when this is the only
-   * account on the machine (then the band and the line leave it out).
+   * setting, a name the config folder carries, its letter, or `single` when
+   * this is the only account on the machine (then the band and the line leave
+   * it out).
    */
-  labelFrom: 'own' | 'setting' | 'folder' | 'single'
+  labelFrom: 'own' | 'setting' | 'folder' | 'letter' | 'single'
+  /** The account's id: its config folder's name (`.claude`, `.claude-b`). */
+  id: string
+  /** A label worth offering, from the login's organization or e-mail domain; null when there is none. */
+  suggested: string | null
   configDir: string
   email: string | null
   mode: string | null
@@ -142,7 +147,8 @@ export type VitalsLimit = { kind: string; percentUsed: number; resetsAt: string 
 export type VitalsSnapshot = {
   at: number
   sessionId: string
-  account: { label: string; configDir: string }
+  /** `label` is what the band shows and anyone can change; `id` is the config folder's name and stays. */
+  account: { label: string; id: string; configDir: string }
   model: string | null
   effort: string | number | null
   cache: {

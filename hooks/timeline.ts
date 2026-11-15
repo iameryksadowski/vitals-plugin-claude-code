@@ -1,7 +1,7 @@
 import type { TimelineEntry } from '../types'
 
-/** A message as one short line for the timeline. */
-export const firstLine = (text: string, max = 90): string => {
+/** How a message opens, for the timeline: its whitespace folded, cut with three dots past `max`. The pane wraps it. */
+export const firstLine = (text: string, max = 180): string => {
   const one = text.replace(/\s+/g, ' ').trim()
   return one.length > max ? `${one.slice(0, max - 3)}...` : one
 }
@@ -52,6 +52,16 @@ export const promptEntry = (prompt: string, source: string | undefined, at: numb
   const own = bare(prompt)
   if (!own) return { ...base, who: 'system', text: firstLine(prompt.replace(/<[^>]+>/g, ' ')) || null }
   return { ...base, who: source === 'system' ? 'system' : 'you', text: firstLine(own) }
+}
+
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+const two = (n: number) => String(n).padStart(2, '0')
+
+/** When a moment was, in the person's zone (`tzMin` east of UTC): `16:01` within the last day, `Sat 16:01` further back. */
+export const stampOf = (at: number, now: number, tzMin: number): string => {
+  const d = new Date(at + tzMin * 60_000)
+  const hm = `${two(d.getUTCHours())}:${two(d.getUTCMinutes())}`
+  return now - at < 20 * 3_600_000 ? hm : `${DAYS[d.getUTCDay()]} ${hm}`
 }
 
 /** How each sender reads in the timeline. */

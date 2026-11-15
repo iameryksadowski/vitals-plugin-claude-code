@@ -19,7 +19,7 @@ export type ShareInput = {
   now: number
   ttl: Ttl
   view: CacheView
-  who: { label: string; configDir: string; model: string | null; effort: string | null }
+  who: { label: string; id: string; configDir: string; model: string | null; effort: string | null }
   live: { tokens?: number; window: number }
   share: number | null
   autoAt: number | null
@@ -37,7 +37,7 @@ export const shareOf = (s: ShareInput, id: string): VitalsSnapshot => {
   return {
     at: s.now,
     sessionId: id,
-    account: { label: s.who.label, configDir: s.who.configDir },
+    account: { label: s.who.label, id: s.who.id, configDir: s.who.configDir },
     model: v.state !== 'none' ? v.model : s.who.model,
     effort: v.effort ?? s.who.effort,
     cache: { state: v.state, leftMs: v.leftMs, idleMs: v.idleMs, why: v.why ?? null, ttl: s.ttl, nextUsd: v.state === 'cold' ? v.cold : v.warm, coldUsd: v.cold },

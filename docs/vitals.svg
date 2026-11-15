@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="196" viewBox="0 0 880 196" role="img" aria-label="Vitals: the band above the Claude Code prompt and the terminal status line">
+  <style>
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px; fill: #d4d4d8; }
+    .dim { fill: #71717a; }
+    .ok { fill: #34d399; }
+    .lbl { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12px; fill: #a1a1aa; letter-spacing: .04em; }
+    .btn { fill: #a1a1aa; }
+  </style>
+  <rect width="880" height="196" rx="12" fill="#18181b"/>
+  <circle cx="22" cy="20" r="5" fill="#3f3f46"/><circle cx="40" cy="20" r="5" fill="#3f3f46"/><circle cx="58" cy="20" r="5" fill="#3f3f46"/>
+
+  <text x="24" y="58" class="lbl">BAND ABOVE THE PROMPT</text>
+  <text x="24" y="84"><tspan class="ok">● Warm 42m</tspan><tspan class="dim">  │  </tspan>Next $0.06<tspan class="dim">  │  </tspan>A<tspan class="dim">  │  </tspan>Weekly 5% <tspan class="dim">6d 15h</tspan><tspan class="dim">  │  </tspan>Context 301k 30%</text>
+  <text x="790" y="84" class="btn" text-decoration="underline">Details</text>
+
+  <rect x="24" y="100" width="832" height="34" rx="6" fill="none" stroke="#3f3f46"/>
+  <text x="36" y="122" class="dim">&gt; </text>
+
+  <text x="24" y="160" class="lbl">TERMINAL STATUS LINE</text>
+  <text x="24" y="182">A · Opus 5.5 · medium · <tspan class="ok">● Warm 42m</tspan> · next $0.06 · 7d 5% <tspan class="dim">6d 15h</tspan> · ctx 30% · main</text>
+</svg>

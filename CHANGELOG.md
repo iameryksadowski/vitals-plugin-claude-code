@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- The README is written for the public repository: why the plugin exists, install, update and remove, a preview image, a privacy section, the Alfred send marked as optional, and notes for plugin authors.
+
 ## [0.6.0] - 2026-11-15
 
 ### Renamed

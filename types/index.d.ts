@@ -100,10 +100,10 @@ export type AlfredSend = { at: number; ok: boolean; status: number; error: strin
 export type TimelineEntry = {
   at: number
   /**
-   * Who sent it: you, Claude's reply, another Claude session, a background
+   * Who sent it: you, Claude's reply, another Claude session, a subagent handing back, a background
    * task finishing, a scheduled or looped prompt, or the app itself.
    */
-  who: 'you' | 'claude' | 'session' | 'task' | 'schedule' | 'system'
+  who: 'you' | 'claude' | 'session' | 'agent' | 'task' | 'schedule' | 'system'
   text: string | null
   ms: number | null
   tools: number | null

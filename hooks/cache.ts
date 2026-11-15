@@ -22,7 +22,7 @@ export const COLD_WRITE_MIN = 20_000
 
 /**
  * $ per million tokens: base input, output, cache read. A cache write is
- * 1.25x input on the 5m TTL and 2x on the 1h TTL. List prices, October 2026.
+ * 1.25x input on the 5m TTL and 2x on the 1h TTL. List prices, November 2026.
  * A row matches a model id only as a whole version: `opus-5` is Opus 5 and
  * never Opus 5.1, so a model this table does not know is priced at nothing
  * rather than at a neighbour's price. A date after the version still matches.
@@ -31,6 +31,8 @@ export type Price = { name: string; input: number; output: number; read: number 
 type Rate = Omit<Price, 'name'>
 
 const PRICES: Array<[string, Rate]> = [
+  ['fable-5-2', { input: 8, output: 40, read: 0.2 }],
+  ['mythos-5-2', { input: 8, output: 40, read: 0.2 }],
   ['fable-5-1', { input: 10, output: 50, read: 0.25 }],
   ['mythos-5-1', { input: 10, output: 50, read: 0.25 }],
   ['fable-5', { input: 10, output: 50, read: 1 }],
@@ -44,7 +46,7 @@ const PRICES: Array<[string, Rate]> = [
   ['opus-4-1', { input: 15, output: 75, read: 1.5 }],
   ['opus-4', { input: 15, output: 75, read: 1.5 }],
   ['3-opus', { input: 15, output: 75, read: 1.5 }],
-  ['sonnet-5-5', { input: 2, output: 10, read: 0.2 }],
+  ['sonnet-5-5', { input: 2, output: 10, read: 0.1 }],
   ['sonnet-5', { input: 2, output: 10, read: 0.2 }],
   ['sonnet-4-6', { input: 3, output: 15, read: 0.3 }],
   ['sonnet-4-5', { input: 3, output: 15, read: 0.3 }],

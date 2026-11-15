@@ -194,3 +194,24 @@ test('the band keeps parts by priority, in reading order, and never drops the fi
   expect(fit(segs, 3, 9).shown.map(s => s.key)).toEqual(['cache'])
   expect(fit([], 100, 9).shown).toEqual([])
 })
+
+test('Fable 5.2 and Mythos 5.2 have their own prices, Sonnet 5.5 its cache read', () => {
+  expect(priceOf('claude-fable-5-2')).toMatchObject({ name: 'Fable 5.2', input: 8, output: 40, read: 0.2 })
+  expect(priceOf('claude-mythos-5-2[1m]')).toMatchObject({ input: 8, output: 40, read: 0.2 })
+  expect(priceOf('claude-fable-5-1')?.input).toBe(10)
+  expect(priceOf('claude-sonnet-5-5')?.read).toBe(0.1)
+})
+
+test('a band too narrow for every part says them shorter before dropping one', () => {
+  const p = (t: string) => ({ t })
+  const segs: Segment[] = [
+    { key: 'cache', prio: 0, pieces: [p('Cache'), p('Warm')] },
+    { key: '7d', prio: 1, pieces: [p('Weekly'), p('24%'), p('6d 7h')], short: [p('Weekly'), p('24%')] },
+    { key: 'context', prio: 1, pieces: [p('Context'), p('136k'), p('14%')], short: [p('Context'), p('14%')] },
+  ]
+  const wide = fit(segs, 80, 0)
+  expect(wide.shown.map(s => widthOf(s))).toEqual(segs.map(s => widthOf(s)))
+  const tight = fit(segs, 44, 0)
+  expect(tight.shown.map(s => s.key)).toEqual(['cache', '7d', 'context'])
+  expect(tight.shown[2]!.pieces.map(x => x.t)).toEqual(['Context', '14%'])
+})

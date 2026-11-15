@@ -1,9 +1,26 @@
 import type { TimelineEntry } from '../types'
 
-/** How a message opens, for the timeline: its whitespace folded, cut with three dots past `max`. The pane wraps it. */
+/** Markdown taken out of a message, so the timeline reads as plain words: links keep their text, headings, emphasis and code marks go. */
+export const plain = (text: string): string =>
+  text
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/!?\[([^\]]*)\]\([^)\s]*\)/g, '$1')
+    .replace(/(^|\s)#{1,6}\s+/g, '$1')
+    .replace(/\*\*|__|`+/g, '')
+
+/** How a message opens, for the timeline: plain words, whitespace folded, cut at a word with three dots past `max`. The pane wraps it. */
 export const firstLine = (text: string, max = 180): string => {
-  const one = text.replace(/\s+/g, ' ').trim()
-  return one.length > max ? `${one.slice(0, max - 3)}...` : one
+  const one = plain(text).replace(/\s+/g, ' ').trim()
+  if (one.length <= max) return one
+  const cut = one.slice(0, max - 3)
+  const word = cut.lastIndexOf(' ')
+  return `${(word > max / 2 ? cut.slice(0, word) : cut).replace(/[\s,;:.-]+$/, '')}...`
+}
+
+/** A message without the lines it quotes (`> ...`), when it says anything of its own. */
+const unquoted = (text: string): string => {
+  const own = text.split('\n').filter(l => !/^\s*>/.test(l)).join('\n')
+  return plain(own).trim() ? own : text
 }
 
 /** The engine's own notes inside a prompt: never something a person wrote. */
@@ -39,6 +56,8 @@ export const promptEntry = (prompt: string, source: string | undefined, at: numb
   const base = { at, ms: null, tools: null }
   const peer = tagged(prompt, 'cross-session-message')
   if (peer) return { ...base, who: 'session', from: sessionName(attr(peer.attrs, 'from')), text: firstLine(bare(peer.body)) || null }
+  const agent = tagged(prompt, 'agent-message')
+  if (agent) return { ...base, who: 'agent', text: firstLine(bare(agent.body).replace(/^\s*\[[^\]]*\]\s*/, '')) || null }
   const task = tagged(prompt, 'task-notification')
   if (task) {
     const summary = tagged(task.body, 'summary')?.body ?? tagged(task.body, 'status')?.body ?? task.body.replace(/<[^>]+>/g, ' ')
@@ -51,7 +70,7 @@ export const promptEntry = (prompt: string, source: string | undefined, at: numb
   if (source === 'loop_wakeup' || source === 'schedule_wakeup') return { ...base, who: 'schedule', text: firstLine(bare(prompt)) || null }
   const own = bare(prompt)
   if (!own) return { ...base, who: 'system', text: firstLine(prompt.replace(/<[^>]+>/g, ' ')) || null }
-  return { ...base, who: source === 'system' ? 'system' : 'you', text: firstLine(own) }
+  return { ...base, who: source === 'system' ? 'system' : 'you', text: firstLine(unquoted(own)) }
 }
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -69,6 +88,7 @@ export const WHO_NAME: Record<TimelineEntry['who'], string> = {
   you: 'You',
   claude: 'Claude',
   session: 'Session',
+  agent: 'Agent',
   task: 'Task',
   schedule: 'Scheduled',
   system: 'App',

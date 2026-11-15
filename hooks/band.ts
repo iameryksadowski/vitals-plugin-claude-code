@@ -3,7 +3,7 @@
 /** One run of text in the band, with no spaces of its own: the band puts them in. */
 export type Piece = { t: string; color?: string; dim?: boolean; bold?: boolean }
 /** One part of the band; the lower `prio`, the longer it stays as the band narrows. */
-export type Segment = { key: string; prio: number; pieces: Piece[] }
+export type Segment = { key: string; prio: number; pieces: Piece[]; /** A shorter way to say it, used when the full parts do not all fit. */ short?: Piece[] }
 
 /** Between parts. Inside a part, pieces stand one space apart. */
 export const SEP = '  │  '
@@ -19,6 +19,14 @@ export const widthOf = (s: Segment): number =>
  * (`withReserve` false), and when it does not fit at all the surface clips it.
  */
 export const fit = (segs: readonly Segment[], columns: number, reserve: number): { shown: Segment[]; withReserve: boolean } => {
+  const full = fitAs(segs, columns, reserve)
+  if (full.shown.length === segs.length || !segs.some(s => s.short)) return full
+  // Not everything fits: say each part shorter before dropping any.
+  const short = fitAs(segs.map(s => (s.short ? { ...s, pieces: s.short } : s)), columns, reserve)
+  return short.shown.length > full.shown.length ? short : full
+}
+
+const fitAs = (segs: readonly Segment[], columns: number, reserve: number): { shown: Segment[]; withReserve: boolean } => {
   const byPrio = [...segs].sort((a, b) => a.prio - b.prio)
   const first = byPrio[0]
   if (!first) return { shown: [], withReserve: true }

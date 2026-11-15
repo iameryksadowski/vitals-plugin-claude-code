@@ -2,7 +2,7 @@
 
 **The session's vital signs for Claude Code**, in one row above the prompt: is the prompt cache still warm, what will the next message cost, how much of your usage limit is left and when it resets, how full the context is and whether now is a good moment to compact. Everything else is one click away in a side pane.
 
-[![Version](https://img.shields.io/badge/version-0.7.0-10b981)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.7.1-10b981)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-10b981)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-2.1.287%2B-18181b)](https://github.com/anthropics/claude-code)
 

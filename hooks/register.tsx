@@ -5,7 +5,7 @@ import { meterApi, setLatest, shareOf } from './share'
 import type { AlfredSend, CacheFacts, ContextInfo, EngineCache, KeepWarm, Layout, Limit, PaneTab, RepoPrefs, Stats, TimelineEntry, Who } from '../types'
 import { ALFRED_EVERY_MS, alfredBody, homePath } from './alfred'
 import { adviceOf, autoPct, mcpLabel, sharePct, splitRows } from './context'
-import { WHO_NAME, firstLine, promptEntry, stampOf } from './timeline'
+import { WHO_NAME, firstLine, plain, promptEntry, stampOf } from './timeline'
 import { SEP, fit, spaced } from './band'
 import type { Segment } from './band'
 import {
@@ -1073,7 +1073,9 @@ export const register: Register = (on, options) => {
       if (!pieces) continue
       const isLimit = f === '5h' || f === '7d' || f === 'spend'
       // The plan's main limit stays in the band as long as the cache state does.
-      segs.push({ key: f, prio: isLimit && !hasMain ? 1 : PRIO[f], pieces })
+      // Shorter: the context as its share alone, a limit without its reset time.
+      const short = f === 'context' && pieces.length === 3 ? [pieces[0]!, pieces[2]!] : isLimit && pieces.length > 2 ? pieces.slice(0, 2) : undefined
+      segs.push({ key: f, prio: isLimit && !hasMain ? 1 : PRIO[f], pieces, short })
       if (isLimit) hasMain = true
     }
 
@@ -1606,7 +1608,7 @@ export const register: Register = (on, options) => {
                       <Text bold>Claude</Text>
                       <Text dimColor>{`${x.ms != null ? `${dot}took ${dur(x.ms)}` : ''}${x.tools ? `${dot}${x.tools} ${x.tools === 1 ? 'tool' : 'tools'}` : ''}`}</Text>
                     </Text>
-                    {x.text ? <Text dimColor wrap="wrap">{x.text}</Text> : null}
+                    {x.text ? <Text dimColor wrap="wrap">{plain(x.text)}</Text> : null}
                   </Box>
                 ) : (
                   <Box flexDirection="column">
@@ -1614,7 +1616,7 @@ export const register: Register = (on, options) => {
                       <Text bold color={x.who === 'you' ? undefined : 'suggestion'}>{WHO_NAME[x.who] ?? 'You'}</Text>
                       {x.from ? <Text dimColor>{`${dot}${x.from}`}</Text> : null}
                     </Text>
-                    {x.text ? <Text dimColor={x.who !== 'you'} wrap="wrap">{x.text}</Text> : null}
+                    {x.text ? <Text dimColor={x.who !== 'you'} wrap="wrap">{plain(x.text)}</Text> : null}
                   </Box>
                 )}
               </Row>,

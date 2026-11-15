@@ -281,7 +281,7 @@ test('at every width the band stays tidy, fits, and keeps the cache state and th
     // Room for the parts, the row's padding and Details beside them.
     if (parts > 1) expect([columns, line.length + 2 + (hasDetails ? 9 : 0) <= columns]).toEqual([columns, true])
     // The weekly limit goes only after everything but the state is gone.
-    if (line.includes('Next') || line.includes('Context')) expect([columns, line.includes('Weekly 88% 2d 4h')]).toEqual([columns, true])
+    if (line.includes('Next') || line.includes('Context')) expect([columns, line.includes('Weekly 88%')]).toEqual([columns, true])
   }
 })
 
@@ -1169,8 +1169,14 @@ test('a narrowing band lets the next price go before the context, cold or warm',
   const { line } = await bandLine($, full.length + 2 + 9 - 30)
   expectTidy(line)
   expect(line).toContain('Cache Cold After compaction')
-  expect(line).toContain('Context 300k 30%')
-  expect(line).not.toContain('Next')
+  // Said shorter first: the context keeps its share, the limit loses its reset time.
+  expect(line).toContain('Context 30%')
+  expect(line).not.toContain('Context 300k')
+  const tighter = (await bandLine($, line.length + 2 + 9 - 12)).line
+  expectTidy(tighter)
+  expect(tighter).toContain('Context')
+  expect(tighter).toContain('30%')
+  expect(tighter).not.toContain('Next')
 })
 
 test('a long message wraps in the timeline instead of being cut at the pane edge', async ($, on) => {

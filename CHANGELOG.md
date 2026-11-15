@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] - 2026-11-15
+
+### Fixed
+
+- Fable 5.2 and Mythos 5.2 were missing from the price table, so the pane read "Not in the price table" and the next message had no price. They are in ($8 / $40 per million tokens, cache reads $0.20), and Sonnet 5.5 cache reads are $0.10.
+- A band without room for every part dropped the context even on a wide window. It now says parts shorter first (the context as its share alone, a limit without its reset time) and drops one only when that is not enough.
+- The timeline showed replies with their Markdown marks (backticks, `##`, link addresses). It reads as plain words now, and a long message is cut at a word with the three dots right after it instead of on a line of their own.
+- A subagent handing back its result was listed as a message from you and counted as one. It reads as "Agent".
+- A message that quotes an earlier reply opened with the quote. The timeline shows what you wrote.
+
 ## [0.7.0] - 2026-11-15
 
 ### Fixed

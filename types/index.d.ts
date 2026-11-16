@@ -74,8 +74,11 @@ export type Who = {
   labelFrom: 'own' | 'setting' | 'folder' | 'letter' | 'single'
   /** The account's id: its config folder's name (`.claude`, `.claude-b`). */
   id: string
-  /** A label worth offering, from the login's organization or e-mail domain; null when there is none. */
-  suggested: string | null
+  /** The label the account has without a name of yours: from accountLabels, its config folder's name, or its letter. Kept beside a rename. */
+  auto: string
+  autoFrom: 'setting' | 'folder' | 'letter'
+  /** Whether this is the only account on the machine. */
+  alone: boolean
   configDir: string
   email: string | null
   mode: string | null
@@ -148,7 +151,7 @@ export type VitalsSnapshot = {
   at: number
   sessionId: string
   /** `label` is what the band shows and anyone can change; `id` is the config folder's name and stays. */
-  account: { label: string; id: string; configDir: string }
+  account: { label: string; auto: string; id: string; configDir: string }
   model: string | null
   effort: string | number | null
   cache: {

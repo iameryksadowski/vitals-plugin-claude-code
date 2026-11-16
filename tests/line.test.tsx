@@ -4,7 +4,7 @@ import type { On } from 'claude-code'
 
 import { alfredBody } from '../hooks/alfred'
 import { meterApi, setLatest, shareOf } from '../hooks/share'
-import { accountOf, clockOf, lineOf, loginFileOf, parseFields, suggestLabel } from '../hooks/fields'
+import { accountOf, clockOf, lineOf, loginFileOf, parseFields } from '../hooks/fields'
 import type { LineData } from '../hooks/fields'
 import { viewOf } from '../hooks/cache'
 
@@ -422,11 +422,11 @@ test('an Alfred that is down never holds the session, and the pane says so', opt
 })
 
 test('other plugins read the session from $.vitals, never the e-mail', async () => {
-  const who = { label: 'B', id: '.claude-b', configDir: `${HOME}/.claude-b`, email: 'konto-b@example.com', model: 'claude-opus-5-5', effort: 'medium' }
+  const who = { label: 'Work', auto: 'B', id: '.claude-b', configDir: `${HOME}/.claude-b`, email: 'konto-b@example.com', model: 'claude-opus-5-5', effort: 'medium' }
   const view = viewOf({ lastAt: NOW - 18 * 60_000, ctx: 301_000, window: 1_000_000, model: 'claude-opus-5-5', effort: 'medium' }, NOW, '1h')
   const st = { requests: 4, read: 960, write: 20, uncached: 20, output: 50, savedUsd: 1, coldWrites: 0, coldUsd: 0, last: null }
   const snap = shareOf({ now: NOW, ttl: '1h', view, who, live: { tokens: 300_000, window: 1_000_000 }, share: 30, autoAt: 92, info: { autoOn: true }, advice: null, ls: LIMITS_B, st, total: 3.5 }, 'sess-1')
-  expect(snap.account).toEqual({ label: 'B', id: '.claude-b', configDir: `${HOME}/.claude-b` })
+  expect(snap.account).toEqual({ label: 'Work', auto: 'B', id: '.claude-b', configDir: `${HOME}/.claude-b` })
   expect(snap.cache.state).toBe('warm')
   expect(snap.cache.leftMs).toBe(42 * 60_000)
   expect(snap.context).toEqual({ tokens: 301_000, window: 1_000_000, percent: 30, autoCompactOn: true, autoCompactAtPercent: 92, advice: null })
@@ -435,14 +435,6 @@ test('other plugins read the session from $.vitals, never the e-mail', async () 
   expect(JSON.stringify(snap)).not.toContain('example.com')
   setLatest(snap)
   expect(await meterApi().snapshot()).toEqual(snap)
-})
-
-test('a label is offered from the organization, else the e-mail domain; a public mail host reads Personal', () => {
-  expect(suggestLabel('ann@example.com', 'Acme')).toBe('Acme')
-  // An organization named after the address, or "...'s Organization", names nothing.
-  expect(suggestLabel('ann@acme-corp.example', "ann@acme-corp.example's Organization")).toBe('Acme Corp')
-  expect(suggestLabel('ann@gmail.com', null)).toBe('Personal')
-  expect(suggestLabel(null, null)).toBe(null)
 })
 
 test('with one account on the machine its name is left out; /vitals account names it, reset hands it back', options(ACCOUNT_LINE), async ($, on) => {
@@ -455,7 +447,7 @@ test('with one account on the machine its name is left out; /vitals account name
   expect(await cache($, 'account Work Laptop')).toBe('This account (.claude) is now Work Laptop, in every session on it.')
   await settle($)
   expect(seen.status.at(-1)).toBe('Work Laptop · konto-a@example.com · Opus 5.5 · medium · ctx 30%')
-  expect(seen.store.get('account')).toEqual({ label: 'Work Laptop' })
+  expect(seen.store.get('account')).toEqual({ label: 'Work Laptop', auto: 'A' })
   expect(await cache($, 'account reset')).toContain('the only account here')
   await settle($)
   expect(seen.status.at(-1)).toBe('konto-a@example.com · Opus 5.5 · medium · ctx 30%')
@@ -470,33 +462,48 @@ test('a session Vitals joins late reads its cache from when the transcript was l
   expect(seen.status.at(-1)).toBe('● Warm 40m · ctx 30%')
 })
 
-test('an account with only a letter is offered a label from its login; one press labels it, Reset hands it back', options({ statusLine: 'on', lineFields: 'account, model' }), async ($, on) => {
+test('a renamed account keeps its automatic label beside the name; a rename made in another session is followed; Reset hands it back', options({ statusLine: 'on', lineFields: 'account, model' }), async ($, on) => {
   const seen = world(on, { configDir: `${HOME}/.claude-b`, email: 'konto-b@acme-corp.example' })
   mock.clock(on, { now: NOW })
   await start($)
   await settle($)
   expect(seen.status.at(-1)).toBe('B · Opus 5.5')
-  const pane = { plugin: 'vitals', component: 'Pane', requestId: 'vitals', props: { title: 'Vitals', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
+  const pane = { plugin: 'vitals', component: 'Pane', requestId: 'vitals', props: { title: 'Vitals', isFocused: false, bodyColumns: 90, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
+  const keys = async (u: { findAll: (q: { type: string }) => Promise<unknown[]> }) => (await u.findAll({ type: 'Button' })).map(b => (b as { key?: string }).key)
   const ui = await $.ui.mount({ ...pane, surface: 'desktop' })
-  // The label and the id are two things: the label is yours to change, the id is the folder.
   expect(await ui.find({ type: 'Text', text: '.claude-b' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /A letter, as its config folder carries no name/ })).toBeDefined()
-  const keys = async (u: typeof ui) => (await u.findAll({ type: 'Button' })).map(b => (b as { key?: string }).key)
-  expect(await keys(ui)).not.toContain('acct-reset')
-  expect(await keys(ui)).toContain('acct-suggested')
-  await ui.press({ key: 'acct-suggested' })
-  await settle($)
-  expect(seen.store.get('account')).toEqual({ label: 'Acme Corp' })
-  expect(seen.status.at(-1)).toBe('Acme Corp · Opus 5.5')
+  // Nothing is offered: the label is the automatic one until the person renames it.
+  expect(await keys(ui)).toEqual((await keys(ui)).filter(k => k !== 'acct-suggested' && k !== 'acct-reset'))
+  expect(await ui.find({ type: 'Text', text: 'Auto Label' })).toBeUndefined()
   await ui.unmount()
+  // Another session on this account renames it: the name is kept per account.
+  seen.store.set('account', { label: 'Personal [B]', auto: 'B' })
   const named = await $.ui.mount({ ...pane, surface: 'desktop' })
+  expect(await named.find({ type: 'Text', text: 'Personal [B]' })).toBeDefined()
   expect(await named.find({ type: 'Text', text: /Your own name for it/ })).toBeDefined()
-  expect(await keys(named)).not.toContain('acct-suggested')
+  expect(await named.find({ type: 'Text', text: 'Auto Label' })).toBeDefined()
+  expect((await cache($, 'account'))).toContain('Auto   B')
   await named.press({ key: 'acct-reset' })
   await settle($)
   expect(seen.store.get('account')).toBeUndefined()
   expect(seen.status.at(-1)).toBe('B · Opus 5.5')
   await named.unmount()
+})
+
+test('a narrow pane stands each label above its value, so a button or the rename field is never cut', async ($, on) => {
+  world(on, { configDir: `${HOME}/.claude-b` })
+  mock.clock(on, { now: NOW })
+  await start($)
+  const at = (bodyColumns: number) => ({ plugin: 'vitals', component: 'Pane', requestId: 'vitals', surface: 'desktop', props: { title: 'Vitals', isFocused: false, bodyColumns, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } }) as const
+  const rowOf = async (bodyColumns: number) => {
+    const ui = await $.ui.mount(at(bodyColumns))
+    const row = (await ui.findAll({ type: 'Box' })).find(b => (b as { key?: string }).key === 'acct-id') as { props?: { flexDirection?: string } } | undefined
+    await ui.unmount()
+    return row?.props?.flexDirection
+  }
+  expect(await rowOf(40)).toBe('column')
+  expect(await rowOf(100)).toBe('row')
 })
 
 test('a config folder that carries a name labels the account by it', options({ statusLine: 'on', lineFields: 'account, model' }), async ($, on) => {
@@ -516,6 +523,6 @@ test('the pane takes a label typed into it, as /vitals account does', options({ 
   await ui.input({ key: 'acct-input', text: '  Client   Work  ', kind: 'submit' })
   await settle($)
   await ui.unmount()
-  expect(seen.store.get('account')).toEqual({ label: 'Client Work' })
+  expect(seen.store.get('account')).toEqual({ label: 'Client Work', auto: 'B' })
   expect(seen.status.at(-1)).toBe('Client Work · Opus 5.5')
 })

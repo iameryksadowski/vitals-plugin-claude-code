@@ -126,24 +126,6 @@ export const accountOf = (
   return { label: auto, id, dir, from: isLetter ? 'letter' : 'folder' }
 }
 
-/** Mail hosts anyone can sign up at: an address there says nothing about whose account it is. */
-const PUBLIC_MAIL = /^(gmail|googlemail|outlook|hotmail|live|msn|icloud|me|mac|yahoo|ymail|proton|protonmail|pm|gmx|aol|fastmail|hey|zoho|mail|wp|o2|onet|interia|tlen)\./
-
-/**
- * A label worth offering for an account that has only a letter: its
- * organization's name, else the company in its e-mail's domain, else
- * `Personal` for a public mail host. Only offered; the person picks it.
- */
-export const suggestLabel = (email: string | null | undefined, organization?: unknown): string | null => {
-  const org = typeof organization === 'string' ? organization.trim() : ''
-  if (org && !org.includes('@') && !/organi[sz]ation$/i.test(org) && org.length <= 24) return org
-  const domain = (email ?? '').split('@')[1]?.toLowerCase()
-  if (!domain) return null
-  if (PUBLIC_MAIL.test(domain)) return 'Personal'
-  const company = domain.split('.')[0]
-  return company ? titleWords(company) : null
-}
-
 /** Where the account keeps its login record: `~/.claude.json` for the default folder, else inside the folder. */
 export const loginFileOf = (configDir: string | undefined, home: string | undefined): string[] => {
   const h = (home ?? '').replace(/\/+$/, '')

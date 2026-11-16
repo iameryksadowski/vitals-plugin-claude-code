@@ -9,7 +9,7 @@ import { WHO_NAME, firstLine, plain, promptEntry, stampOf } from './timeline'
 import { SEP, fit, spaced } from './band'
 import type { Segment } from './band'
 import {
-  BAND_DEFAULT, FIELDS, FIELD_INFO, LINE_DEFAULT, MODE_NAME, PRIO, accountOf, fieldsOr, lineOf, loginFileOf, parseFields, piecesOf, suggestLabel,
+  BAND_DEFAULT, FIELDS, FIELD_INFO, LINE_DEFAULT, MODE_NAME, PRIO, accountOf, fieldsOr, lineOf, loginFileOf, parseFields, piecesOf,
 } from './fields'
 import type { Field, LineData, ResetStyle } from './fields'
 import {
@@ -46,8 +46,8 @@ const engine = atom({ plugin: 'vitals', key: 'engine' } as const, EMPTY_ENGINE, 
 const holds = atom({ plugin: 'vitals', key: 'guard' } as const, null as boolean | null, { shape: 'guard-1' })
 const EMPTY_REPO: RepoPrefs = { root: null, guard: null, warm: null }
 const repo = atom({ plugin: 'vitals', key: 'repo' } as const, EMPTY_REPO, { shape: 'repo-1' })
-const EMPTY_WHO: Who = { label: '', labelFrom: 'single', id: '', suggested: null, configDir: '', email: null, mode: null, style: null, dir: null, branch: null, effort: null, model: null, tzMin: 0 }
-const who = atom({ plugin: 'vitals', key: 'who' } as const, EMPTY_WHO, { shape: 'who-3' })
+const EMPTY_WHO: Who = { label: '', labelFrom: 'single', id: '', auto: '', autoFrom: 'letter', alone: false, configDir: '', email: null, mode: null, style: null, dir: null, branch: null, effort: null, model: null, tzMin: 0 }
+const who = atom({ plugin: 'vitals', key: 'who' } as const, EMPTY_WHO, { shape: 'who-5' })
 const EMPTY_LAYOUT: Layout = { band: null, line: null, status: null }
 const layout = atom({ plugin: 'vitals', key: 'layout' } as const, EMPTY_LAYOUT, { shape: 'layout-1' })
 const EMPTY_ALFRED: AlfredSend = { at: 0, ok: false, status: 0, error: null, sent: 0 }
@@ -74,6 +74,8 @@ const SESSIONS_MAX = 40
 const LAYOUT_KEY = 'layout'
 /** This account's own label, set with /vitals account or in the pane. */
 const ACCOUNT_KEY = 'account'
+/** Below this many columns the pane stacks each label above its value. */
+const NARROW_BELOW = 72
 /** The longest label an account takes. */
 const ACCOUNT_MAX = 24
 /** The account's last known usage limits, for a new session before its first reply. */
@@ -159,7 +161,7 @@ async function snapshot($: EngineInterface, cfg: Settings) {
   const base = viewOf(switched && f ? { ...f, model: switched } : f, now, ttl)
   let view: CacheView = switched && base.state !== 'none' ? { ...base, state: 'cold', leftMs: 0 } : base
   const st = await read($, stats)
-  const me = await read($, who)
+  const me = await followRename($, await read($, who))
   const live = await liveContext($)
   const wasCompacted = await read($, compacted)
   const info = await read($, ctxinfo)
@@ -576,14 +578,29 @@ async function hasOtherAccounts($: EngineInterface, configDir: string, home: str
   }
 }
 
+/**
+ * The account's name is kept per account, so a rename in one session has to
+ * reach the others: each reading checks the stored name against the one this
+ * session holds and takes the stored one.
+ */
+async function followRename($: EngineInterface, w: Who): Promise<Who> {
+  if (!w.id) return w
+  const kept = ((await $.store.get(ACCOUNT_KEY).catch(() => undefined)) as { label?: unknown } | undefined)?.label
+  const own = typeof kept === 'string' && kept.trim() ? kept.trim().slice(0, ACCOUNT_MAX) : null
+  const held = w.labelFrom === 'own' ? w.label : null
+  if (own === held) return w
+  // Read only: a reading is taken while the pane draws, and drawing writes nothing.
+  return own ? { ...w, label: own, labelFrom: 'own' } : { ...w, label: w.auto, labelFrom: w.alone && w.autoFrom === 'letter' ? 'single' : w.autoFrom }
+}
+
 /** Labels this account, or hands the label back to its folder. */
 async function setAccountName($: EngineInterface, cfg: Settings, name: string | null): Promise<string> {
-  if (name) await $.store.set(ACCOUNT_KEY, { label: name })
+  if (name) await $.store.set(ACCOUNT_KEY, { label: name, auto: (await read($, who)).auto })
   else await $.store.delete(ACCOUNT_KEY)
   await loadWho($, cfg, '')
   const w = await read($, who)
   $.ui.invalidate('ui.render')
-  return name ? `This account (${w.id}) is now ${w.label}, in every session on it.` : `This account (${w.id}) is ${w.label} again: ${LABEL_FROM[w.labelFrom]}.`
+  return name ? `This account (${w.id}) is now ${w.label}, in every session on it.` : `This account (${w.id}) is ${w.label || w.auto} again: ${LABEL_FROM[w.labelFrom]}.`
 }
 
 /** Where the label comes from, as the pane and /vitals account say it. */
@@ -600,7 +617,7 @@ const accountText = (w: Who): string =>
   [
     `Label  ${w.label || '(none)'}: ${LABEL_FROM[w.labelFrom]}`,
     `ID     ${w.id} (the account's config folder, ${w.configDir || '~/.claude'})`,
-    ...(w.suggested && (w.labelFrom === 'letter' || w.labelFrom === 'single') ? [`Idea   /vitals account ${w.suggested}`] : []),
+    ...(w.labelFrom === 'own' ? [`Auto   ${w.auto}: ${LABEL_FROM[w.autoFrom]}, kept beside your name`] : []),
     '/vitals account <name> labels it (Work, Personal, anything up to 24 characters); /vitals account reset hands it back.',
   ].join('\n')
 
@@ -630,15 +647,16 @@ async function loadWho($: EngineInterface, cfg: Settings, cwd: string): Promise<
     const acct = accountOf(configDir, home, cfg.labels, own)
     const labelFrom: Who['labelFrom'] = acct.from === 'letter' && !(await hasOtherAccounts($, configDir, home)) ? 'single' : acct.from
     const login = await loginOf($, configDir, home)
-    const idea = suggestLabel(login.email, login.organization)
+    const auto = accountOf(configDir, home, cfg.labels)
     const effort = await $.settings.read({ key: 'effortLevel' }).catch(() => undefined)
     const where = cwd || (await $.session.cwd())
     const next: Who = {
       label: acct.label,
       labelFrom,
       id: acct.id,
-      // Offered only where it would say more than the letter does.
-      suggested: idea && idea.toLowerCase() !== acct.label.toLowerCase() ? idea : null,
+      auto: auto.label,
+      autoFrom: auto.from === 'own' ? 'letter' : auto.from,
+      alone: !(await hasOtherAccounts($, configDir, home)),
       configDir,
       email: login.email,
       mode: null,
@@ -722,7 +740,7 @@ async function answerCommand($: EngineInterface, e: CommandRunInput, cfg: Settin
   if (sub === 'account') {
     const raw = (e.args ?? '').trim().split(/\s+/).slice(1).join(' ').trim()
     if (!raw) {
-      const w = await read($, who)
+      const w = await followRename($, await read($, who))
       return { text: accountText(w) }
     }
     const text = await setAccountName($, cfg, raw.toLowerCase() === 'reset' ? null : raw.slice(0, ACCOUNT_MAX))
@@ -1109,6 +1127,7 @@ export const register: Register = (on, options) => {
     const d = lineData(snap, cfg, await liveContext($))
     const lineText = lineOf(lineFields(snap, cfg), d)
     const LABEL = 14
+    const NARROW = (e.props.bodyColumns ?? 60) < NARROW_BELOW
     const tone = TONE[view.state]
     const inputs = st.read + st.write + st.uncached
     const cold = view.state === 'cold'
@@ -1126,10 +1145,18 @@ export const register: Register = (on, options) => {
       </Box>
     )
     const Row = (p: { k: string; label: string; width?: number; children: RenderChildren }) => (
-      <Box key={p.k} flexDirection="row" columnGap={1}>
-        <Box width={p.width ?? LABEL} flexShrink={0}><Text dimColor wrap="truncate">{p.label}</Text></Box>
-        <Box flexDirection="column" flexGrow={1} flexShrink={1}>{p.children}</Box>
-      </Box>
+      NARROW && p.width == null ? (
+        // A narrow pane has no room for a label column: the label stands above its value.
+        <Box key={p.k} flexDirection="column">
+          <Text dimColor size="footnote" wrap="wrap">{p.label}</Text>
+          <Box flexDirection="column" minWidth={0}>{p.children}</Box>
+        </Box>
+      ) : (
+        <Box key={p.k} flexDirection="row" columnGap={1}>
+          <Box width={p.width ?? LABEL} flexShrink={0}><Text dimColor wrap="truncate">{p.label}</Text></Box>
+          <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>{p.children}</Box>
+        </Box>
+      )
     )
     /**
      * A meter of a fixed number of cells, filled and empty, as one line of text.
@@ -1137,7 +1164,7 @@ export const register: Register = (on, options) => {
      * past its share, and nothing is cut with an ellipsis.
      */
     // As wide as the pane leaves beside the label, so a narrow pane never cuts it.
-    const METER_CELLS = Math.max(8, Math.min(32, (e.props.bodyColumns ?? 60) - LABEL - 6))
+    const METER_CELLS = Math.max(8, Math.min(32, (e.props.bodyColumns ?? 60) - (NARROW ? 0 : LABEL) - 6))
     const Meter = (p: { share: number; color?: string }) => {
       const share = Number.isFinite(p.share) ? Math.max(0, Math.min(1, p.share)) : 0
       const filled = share > 0 ? Math.max(1, Math.round(share * METER_CELLS)) : 0
@@ -1152,7 +1179,7 @@ export const register: Register = (on, options) => {
     /** What this repo keeps for every session in it, with one button to keep the current state or hand it back. */
     const RepoRow = (p: { k: string; field: 'guard' | 'warm'; kept: boolean | null; isOn: boolean }) => (
       <Row k={p.k} label="This Repo">
-        <Box flexDirection="row" columnGap={1} alignItems="center">
+        <Box flexDirection="row" columnGap={1} alignItems="center" flexWrap="wrap">
           <Text dimColor>{p.kept === null ? 'Follows settings' : p.kept ? 'Always on' : 'Always off'}</Text>
           <Button
             key={`${p.field}-repo`}
@@ -1180,25 +1207,27 @@ export const register: Register = (on, options) => {
             </Text>
             {me.labelFrom === 'own' ? <Button key="acct-reset" label="Reset" variant="secondary" onPress={() => void setAccountName($, cfg, null).then(() => refreshLine($, cfg, mem))} /> : null}
           </Box>
-          {me.suggested && (me.labelFrom === 'letter' || me.labelFrom === 'single') ? (
-            <Box flexDirection="row" columnGap={1} alignItems="center" flexWrap="wrap">
-              <Text dimColor>Label it</Text>
-              <Button key="acct-suggested" label={me.suggested} variant="secondary" onPress={() => void setAccountName($, cfg, me.suggested).then(() => refreshLine($, cfg, mem))} />
-            </Box>
-          ) : null}
         </Row>
-        <Row k="acct-rename" label="Rename">
+        {me.labelFrom === 'own' ? (
+          <Row k="acct-auto" label="Auto Label">
+            <Text wrap="wrap">
+              <Text>{me.auto}</Text>
+              <Text dimColor>{`${dot}${cap(LABEL_FROM[me.autoFrom])}; Reset brings it back`}</Text>
+            </Text>
+          </Row>
+        ) : null}
+        <Box key="acct-rename" flexDirection="column">
+          <Text dimColor size="footnote" wrap="wrap">Rename it for every session on this account. /vitals account Work does the same.</Text>
           <Input
             key="acct-input"
-            placeholder="Work, Personal, any name of yours"
-            submitLabel="save"
+            placeholder="New name"
+            submitLabel="Save"
             onSubmit={value => {
               const name = value.replace(/\s+/g, ' ').trim().slice(0, ACCOUNT_MAX)
               if (name) void setAccountName($, cfg, name).then(() => refreshLine($, cfg, mem))
             }}
           />
-          <Text dimColor size="footnote" wrap="wrap">For every session on this account. /vitals account Work does the same.</Text>
-        </Row>
+        </Box>
         <Row k="acct-id" label="ID">
           <Text wrap="wrap">
             <Text mono>{me.id}</Text>
@@ -1509,7 +1538,7 @@ export const register: Register = (on, options) => {
           <Meter share={share != null ? share / 100 : 0} color={autoAt != null && share != null && share >= autoAt - 10 ? 'warning' : undefined} />
         </Row>
         <Row k="ctx-auto" label="Auto-Compact">
-          <Box flexDirection="row" columnGap={1} alignItems="center">
+          <Box flexDirection="row" columnGap={1} alignItems="center" flexWrap="wrap">
             <Text>
               <Text bold color={info?.autoOn === false ? 'warning' : undefined}>{info?.autoOn === false ? 'Off' : 'On'}</Text>
               {autoAt != null ? <Text dimColor>{`${dot}Runs at ${autoAt}%${share != null && autoAt > share ? `, ${autoAt - share} points to go` : ''}`}</Text> : null}

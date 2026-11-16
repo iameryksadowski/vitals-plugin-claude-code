@@ -2,7 +2,7 @@
 
 **The session's vital signs for Claude Code**, in one row above the prompt: is the prompt cache still warm, what will the next message cost, how much of your usage limit is left and when it resets, how full the context is and whether now is a good moment to compact. Everything else is one click away in a side pane.
 
-[![Version](https://img.shields.io/badge/version-0.7.1-10b981)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.7.2-10b981)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-10b981)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-2.1.287%2B-18181b)](https://github.com/anthropics/claude-code)
 
@@ -151,7 +151,7 @@ An account has two things:
 | The folder's name | A config folder that carries a name gives it: `~/.claude-work` is Work, `~/.claude-my-team` is My Team |
 | A letter | A folder with no name in it: `~/.claude` is A, `~/.claude-b` is B, `~/.claude-2` is 2 |
 
-An account that has only a letter is offered a label in the pane, taken from the login's organization or the company in its e-mail's domain (Personal for a public mail host). One press takes it; nothing is set until you do.
+A rename is kept per account, so every session on it shows the new name. The automatic label stays beside it (the pane shows both, `$.vitals.snapshot()` gives `account.auto`), and Reset brings it back.
 
 `/vitals account` prints the label, where it comes from and the ID.
 

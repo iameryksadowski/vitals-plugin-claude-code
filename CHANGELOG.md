@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.7.2] - 2026-11-16
+
+### Fixed
+
+- An account renamed in one session kept its old name in the others until they restarted. The name is kept per account, and every reading now takes the kept one, so the band, the status line and the pane of every session follow a rename or a reset.
+- A narrow pane cut buttons and the rename field at its edge. Under 72 columns each label now stands above its value, button rows wrap, and the rename field has a line of its own at any width.
+
+### Changed
+
+- A renamed account shows both labels: yours, and under it the automatic one (from `accountLabels`, the config folder's name, or its letter), which Reset brings back. Both are kept in the account's store, and `$.vitals.snapshot()` gives `account.auto` beside `account.label`.
+
+### Removed
+
+- The offered label ("Label it Acme"), guessed from the login's organization or e-mail domain. The label is the automatic one until you rename it.
+
 ## [0.7.1] - 2026-11-15
 
 ### Fixed

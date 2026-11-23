@@ -1,7 +1,9 @@
 // When compacting is worth it, from the cache and the context. Pure, no engine.
 
 import type { CacheView } from './cache'
-import { pct } from './cache'
+import { pct, tok } from './cache'
+import { imagesHeavy } from './images'
+import type { ImageWeight } from './images'
 
 /** How close to auto-compact the hint starts, in points of the window. */
 export const NEAR_AUTO = 10
@@ -14,6 +16,8 @@ export type CompactFacts = {
   /** Auto-compact: on or off (null unknown), and its threshold in tokens. */
   autoOn: boolean | null
   threshold: number | null
+  /** The images in the context, when counted. */
+  images?: ImageWeight | null
 }
 
 /** The context's share of the window: the cache's own figure first, else the engine's. */
@@ -41,6 +45,9 @@ export const adviceOf = (view: CacheView, f: CompactFacts, coldAt: number): stri
   if (auto != null && share >= auto - NEAR_AUTO) return `auto-compact at ${auto}%`
   if (view.state === 'cold' && view.why !== 'compacted' && share >= coldAt) return `cache cold, context ${share}%`
   if (f.autoOn === false && share >= NO_AUTO_AT) return `context ${share}%, auto-compact off`
+  // Images are read again with every message and every Keep Warm ping; /compact images swaps them for text and keeps the rest.
+  const ctx = view.state !== 'none' ? view.ctx : (f.context.tokens ?? 0)
+  if (imagesHeavy(f.images, ctx)) return `images ${tok(f.images!.tokens)}, /compact images`
   return null
 }
 

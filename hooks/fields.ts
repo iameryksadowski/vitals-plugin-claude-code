@@ -7,7 +7,7 @@ import type { CacheView } from './cache'
 
 export const FIELDS = [
   'account', 'email', 'model', 'effort', 'mode', 'style', 'dir', 'branch',
-  'cache', 'next', 'ifcold', 'context', 'compact', 'hit', '5h', '7d', 'spend', 'session',
+  'cache', 'next', 'ifcold', 'context', 'images', 'compact', 'hit', '5h', '7d', 'spend', 'session',
 ] as const
 export type Field = (typeof FIELDS)[number]
 
@@ -25,6 +25,7 @@ export const FIELD_INFO: Record<Field, string> = {
   next: 'What the next message costs (a cache read, or a re-cache when cold)',
   ifcold: 'What the next message would cost once the cache is cold',
   context: 'Context tokens and share of the window',
+  images: 'Images in the context and their tokens, read again every message; hidden with none',
   compact: 'A hint to compact: the context is large while the cache is cold, or auto-compact is near',
   hit: 'Cache hit rate of the session',
   '5h': '5-hour usage limit with its reset',
@@ -34,7 +35,7 @@ export const FIELD_INFO: Record<Field, string> = {
 }
 
 /** One row above the prompt: what Claude does not show on its own, nothing it does. */
-export const BAND_DEFAULT: readonly Field[] = ['cache', 'next', 'account', '5h', '7d', 'spend', 'context', 'compact']
+export const BAND_DEFAULT: readonly Field[] = ['cache', 'next', 'account', '5h', '7d', 'spend', 'context', 'images', 'compact']
 /** The terminal status line: Claude's terminal footer has no model or effort, so the line carries them. */
 export const LINE_DEFAULT: readonly Field[] = ['account', 'model', 'effort', 'cache', 'next', '5h', '7d', 'context', 'compact', 'branch']
 
@@ -44,6 +45,7 @@ const ALIAS: Record<string, Field | Field[]> = {
   limits: ['5h', '7d', 'spend'],
   cold: 'ifcold', 'if-cold': 'ifcold',
   ctx: 'context',
+  image: 'images', img: 'images', pictures: 'images', screenshots: 'images',
   compaction: 'compact', autocompact: 'compact',
   cost: 'session', usd: 'session',
   hitrate: 'hit', 'hit-rate': 'hit',
@@ -170,6 +172,8 @@ export type LineData = {
   hit: number | null
   /** The live window as the engine has it, for the context before this session's first reply. */
   context: { tokens?: number; window: number; percent?: number }
+  /** Images in the context, when counted. */
+  images?: { count: number; tokens: number } | null
   /** Why compacting now is a good idea, in a few words; null when it is not. */
   advice: string | null
   limits: readonly Limit[]
@@ -255,6 +259,12 @@ export const piecesOf = (f: Field, d: LineData, compact: boolean): Piece[] | nul
       if (compact) return [{ t: 'ctx', dim: true }, { t: share != null ? `${share}%` : tok(tokens) }]
       return [{ t: 'Context', dim: true }, { t: tok(tokens) }, ...(share != null ? [{ t: `${share}%`, dim: true }] : [])]
     }
+    case 'images': {
+      const im = d.images
+      if (!im || im.count === 0) return null
+      if (compact) return [{ t: 'img', dim: true }, { t: `${im.count} ${tok(im.tokens)}` }]
+      return [{ t: im.count === 1 ? 'Image' : 'Images', dim: true }, { t: String(im.count) }, { t: tok(im.tokens), dim: true }]
+    }
     case 'compact':
       if (!d.advice) return null
       return compact ? [{ t: 'compact?', color: 'warning' }] : [{ t: 'Compact', color: 'warning', bold: true }, { t: d.advice, dim: true }]
@@ -300,6 +310,6 @@ export const lineOf = (fields: readonly Field[], d: LineData): string => {
 
 /** How long a field may stay in the band as it narrows: the lower, the longer. */
 export const PRIO: Record<Field, number> = {
-  cache: 0, account: 1, context: 1, '5h': 3, '7d': 3, spend: 3, next: 2, compact: 2, model: 4, ifcold: 4, hit: 5, effort: 5,
+  cache: 0, account: 1, context: 1, images: 4, '5h': 3, '7d': 3, spend: 3, next: 2, compact: 2, model: 4, ifcold: 4, hit: 5, effort: 5,
   session: 6, mode: 6, branch: 7, dir: 8, style: 8, email: 9,
 }

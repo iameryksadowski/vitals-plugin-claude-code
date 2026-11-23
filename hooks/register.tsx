@@ -7,6 +7,8 @@ import { ALFRED_EVERY_MS, alfredBody, homePath } from './alfred'
 import { adviceOf, autoPct, mcpLabel, sharePct, splitRows } from './context'
 import { WHO_NAME, firstLine, plain, promptEntry, stampOf } from './timeline'
 import { SEP, fit, spaced } from './band'
+import { asksImages, describePrompt, noteOf, parseDescriptions, stripImages, toolImages, weighImages } from './images'
+import type { CompactMessage } from './images'
 import type { Segment } from './band'
 import {
   BAND_DEFAULT, FIELDS, FIELD_INFO, LINE_DEFAULT, MODE_NAME, PRIO, accountOf, fieldsOr, lineOf, loginFileOf, parseFields, piecesOf,
@@ -28,7 +30,7 @@ const PANE = 'vitals'
 const TITLE = 'Vitals'
 /** How often the band redraws, so the countdown and the warm-to-cold flip stay current. */
 const TICK_MS = 15_000
-const ARGS = '[now|context|cost|timeline|settings] | account [name|reset] | compact | autocompact [on|off] | [warm|guard] [on|off] | [warm|guard] repo [on|off|reset] | [band|line] [show|hide|set|reset] [fields] | line [on|off|auto] | fields'
+const ARGS = '[now|context|cost|timeline|settings] | account [name|reset] | compact | images | autocompact [on|off] | [warm|guard] [on|off] | [warm|guard] repo [on|off|reset] | [band|line] [show|hide|set|reset] [fields] | line [on|off|auto] | fields'
 /** The fork Keep Warm sends: the session's own prefix plus this, so the reply stays one word. */
 const PING = 'Cache keep-alive ping from the Vitals plugin. Reply with the single word OK and nothing else.'
 
@@ -180,7 +182,7 @@ async function snapshot($: EngineInterface, cfg: Settings) {
     const cold = viewOf({ lastAt: 1, ctx: tokens, window: live.window || info?.window || 0, model, effort: me.effort }, now, ttl)
     view = { ...cold, state: 'cold', idleMs: 0, leftMs: 0, why: wasCompacted ? 'compacted' : 'unknown' }
   }
-  const facts4 = { context: live, autoOn: info?.autoOn ?? null, threshold: info?.threshold ?? null }
+  const facts4 = { context: live, autoOn: info?.autoOn ?? null, threshold: info?.threshold ?? null, images: info?.images ?? null }
   return {
     ls, ttl, now, w, view, switched, live, info,
     advice: cfg.compact.on ? adviceOf(view, facts4, cfg.compact.coldAt) : null,
@@ -233,6 +235,7 @@ const lineData = (s: Snapshot, cfg: Settings, context: LineData['context']): Lin
     requests: s.st.requests,
     hit: s.st.requests > 0 && inputs > 0 ? pctDown(s.st.read, inputs) : null,
     context,
+    images: s.info?.images ?? null,
     advice: s.advice,
     limits: s.ls,
     now: s.now,
@@ -402,11 +405,52 @@ async function refreshContext($: EngineInterface, force = false): Promise<void> 
         .map(([server, s]) => ({ server, label: mcpLabel(server, s.tools), tokens: s.tokens, deferred: s.deferred }))
         .sort((x, y) => y.tokens - x.tokens || y.deferred - x.deferred)
         .slice(0, 6),
+      images: await imagesNow($) ?? had?.images,
     }
     await update($, ctxinfo, () => info)
   } catch {
     // no breakdown: the hint falls back to the context share alone
   }
+}
+
+/** The images the next request carries, from the messages themselves; null when they cannot be read. */
+async function imagesNow($: EngineInterface): Promise<ContextInfo['images'] | undefined> {
+  try {
+    return weighImages(await $.session.messages({ as: 'api' }))
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * `/compact images`: the conversation stays word for word, and each image a
+ * tool returned gives way to a note with its description. The session's own
+ * model writes the descriptions in one fork over its cached transcript; the
+ * reply right after each image stands in when the fork has no answer. Images
+ * pasted into a prompt are not reachable from here and stay.
+ */
+async function compactImages($: EngineInterface, messages: readonly CompactMessage[]): Promise<{ messages: CompactMessage[]; text: string } | null> {
+  const images = toolImages(messages)
+  if (images.length === 0) return null
+  const before = await imagesNow($)
+  let descriptions: string[] | null = null
+  try {
+    const r = await $.model.fork({ prompt: describePrompt(images) })
+    if (r.isAnswered) descriptions = parseDescriptions(r.text, images.length)
+  } catch {
+    // no fork: the replies after the images stand in
+  }
+  const notes = new Map(images.map((im, i) => [im.id, noteOf(im, descriptions?.[i] ?? null)]))
+  const out = stripImages(messages, notes)
+  const pasted = before ? before.count - before.inTools : 0
+  const share = before && before.inTools > 0 ? Math.round((before.tokens * images.length) / before.count) : 0
+  const text = [
+    `${images.length === 1 ? 'One image' : `${images.length} images`} out of the context${share ? `, about ${tok(share)} less in every message` : ''}.`,
+    descriptions ? 'Each is described in its place.' : 'No descriptions came back: the reply after each image stands in.',
+    pasted > 0 ? `${pasted === 1 ? 'One image' : `${pasted} images`} pasted into a prompt stay${pasted === 1 ? 's' : ''}.` : '',
+    'The next message writes the cache again.',
+  ].filter(Boolean).join(' ')
+  return { messages: out.messages, text }
 }
 
 /** Adds one moment to the timeline, the newest kept. */
@@ -759,6 +803,21 @@ async function answerCommand($: EngineInterface, e: CommandRunInput, cfg: Settin
     }
     return { text: 'Compacting as soon as this command is done.' }
   }
+  if (sub === 'images') {
+    await refreshContext($, true)
+    const im = (await read($, ctxinfo))?.images
+    if (!im || im.count === 0) return { text: 'No images in the context.' }
+    const pasted = im.count - im.inTools
+    return {
+      text: [
+        `${im.count === 1 ? 'One image' : `${im.count} images`} in the context, about ${tok(im.tokens)}, read again with every message and every Keep Warm ping.`,
+        im.inTools > 0
+          ? `/compact images swaps the ${im.inTools === 1 ? 'one' : im.inTools} a tool returned for a short description and keeps the rest of the conversation word for word. Best when the cache is cold: the next message writes it again either way.`
+          : '',
+        pasted > 0 ? `${pasted === 1 ? 'One was' : `${pasted} were`} pasted into a prompt: only a full /compact takes ${pasted === 1 ? 'it' : 'them'} out.` : '',
+      ].filter(Boolean).join('\n'),
+    }
+  }
   if (sub === 'autocompact') return { text: await setAutoCompact($, arg === 'on' ? true : arg === 'off' ? false : undefined) }
   const toTab = TABS.find(t => t.id === sub)?.id
   if (toTab) {
@@ -971,6 +1030,18 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e)) // a meter that fails never holds up a model switch
 
   on('session.compact', async ($, e, next) => {
+    if (!e.agentId && e.trigger === 'manual' && asksImages(e.instructions)) {
+      const done = await compactImages($, e.messages as readonly CompactMessage[])
+      if (!done) {
+        $.ui.toast('No image a tool returned is in the context, so nothing was compacted.')
+        return { skip: 'no images to take out' }
+      }
+      // The conversation is the same, so the cache is cold from the first image on, not after a summary.
+      await update($, facts, () => null)
+      void refreshContext($, true)
+      $.ui.toast(done.text)
+      return { messages: done.messages as never }
+    }
     const r = await next(e)
     // The summary is the next request's whole prefix: writing it is no cold write.
     if (!e.agentId && !('skip' in r && r.skip)) {
@@ -1546,6 +1617,14 @@ export const register: Register = (on, options) => {
             <Button key="auto-toggle" label={info?.autoOn === false ? 'Turn On' : 'Turn Off'} variant="secondary" onPress={() => void setAutoCompact($)} />
           </Box>
         </Row>
+        {info?.images && info.images.count > 0 ? (
+          <Row k="ctx-images" label="Images">
+            <Text>
+              <Text tabular bold>{String(info.images.count)}</Text>
+              <Text dimColor>{`${dot}${tok(info.images.tokens)} tokens, read again every message${info.images.inTools > 0 ? `${dot}/compact images swaps ${info.images.inTools === info.images.count ? 'them' : `the ${info.images.inTools} from tools`} for descriptions` : ''}`}</Text>
+            </Text>
+          </Row>
+        ) : null}
         <Row k="ctx-advice" label="Advice">
           <Text color={snap.advice ? 'warning' : undefined} dimColor={!snap.advice}>
             {snap.advice

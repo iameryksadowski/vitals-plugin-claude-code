@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-11-23
+
+### Added
+
+- Images in the context. The band's new `images` field (in the default band, hidden with none), `/vitals images` and a row in the Context tab show how many images the context carries and their tokens, which every message and every Keep Warm ping reads again.
+- `/compact images` takes the images tools returned out of the context and keeps the rest of the conversation word for word. The session's own model describes each one in a single fork over its cached transcript, and the description, with the file's path, stands in its place; without one, the reply right after the image does. No summary is made, and auto-compact and other `/compact` words work as before.
+- The compact hint names the images (`images 40k, /compact images`) once those from tools weigh 20k tokens or more and a tenth of the context.
+
 ## [0.7.2] - 2026-11-16
 
 ### Fixed

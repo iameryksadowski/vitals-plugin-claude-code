@@ -134,6 +134,8 @@ export type ContextInfo = {
   buffer: number
   /** MCP servers by tool schema size: in the window now, and loaded on demand. */
   mcp: Array<{ server: string; label: string; tokens: number; deferred: number }>
+  /** Images in the messages the next request carries: how many, their estimated tokens, and how many a tool returned. Absent before the first count. */
+  images?: { count: number; tokens: number; inTools: number }
 }
 
 /** The pane's open tab. */

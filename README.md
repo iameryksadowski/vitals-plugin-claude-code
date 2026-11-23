@@ -44,6 +44,7 @@ Vitals was called Cache Meter until 0.6.0. Run `claude plugin uninstall cache-me
 | **Next** | What re-sending the context costs while warm (cache read), and in the last minutes what it will cost once cold (cache write). |
 | **Account and limits** | Which account the session runs on, when you run more than one (see [Accounts](#accounts)), and percent used with the time to reset for each limit your plan reports (an Ultra plan reports only the weekly one). Warning at 80%, error at 95%. Resets read as `6d 15h`, within a day as `14h 20m`. |
 | **Context** | Tokens in the context and their share of the window. |
+| **Images** | How many images the context carries and their tokens, read again with every message and every Keep Warm ping. Hidden with none. See [Images](#images). |
 | **Compact** | A hint, with the reason, only when compacting is worth it. See [Compaction](#compaction). |
 
 As the window narrows, parts drop out strictly by priority: the cache state stays longest, then the account, its main limit and the context, then the next message cost and the compact hint.
@@ -66,7 +67,8 @@ Compacting costs about one pass over the context, so it is cheapest at a break y
 
 - **the cache has gone cold and the context is large** (over `compactAt`, 50% by default): the next message pays that pass anyway, so compacting first costs about the same and every message after it is smaller;
 - **auto-compact is near** (within 10 points of its threshold): better now, at a natural break, than mid-task;
-- **auto-compact is off** and the context is over 80%.
+- **auto-compact is off** and the context is over 80%;
+- **images a tool returned weigh 20k tokens or more** and are at least a tenth of the context: then the hint says `/compact images` (see [Images](#images)).
 
 Then the band shows `Compact` with the reason.
 
@@ -76,6 +78,21 @@ Then the band shows `Compact` with the reason.
 ```
 
 `compactHint: off` hides the hint.
+
+## Images
+
+A screenshot or an image file a tool read stays in the context until it is compacted, so every message and every Keep Warm ping reads it again: about 1,000 to 1,600 tokens each. Vitals counts them (the `images` field, `/vitals images`, the Context tab) and can take them out without losing the conversation:
+
+```
+/vitals images        how many, their tokens, how many /compact images can reach
+/compact images       swap each image a tool returned for a short description; everything else stays word for word
+```
+
+`/compact images` asks the session's own model, in one fork over its cached transcript, to describe every image in a sentence or three (what it shows, the text and numbers that matter). Each image then gives way to a note with its description and, for a file, the path to read it again. When no description comes back, the reply right after the image stands in. The messages without an image are kept exactly as they were, so it is no summary: the conversation reads the same, only lighter.
+
+- Rewriting the conversation means the next message writes the cache again from the first image on, so it pays off when the cache is cold anyway, or when many messages are still to come.
+- Images pasted into a prompt are out of its reach (plugins cannot rewrite them in place); a full `/compact` takes them out.
+- Only `/compact images` (also `image`, `img`) does this; `/compact` with any other words compacts as usual, and auto-compact is not touched. Subagents' own compactions are left alone.
 
 ## Status line
 
